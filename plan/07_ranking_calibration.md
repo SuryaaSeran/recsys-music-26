@@ -147,6 +147,20 @@ To create:
   a large sentinel so 1/log2 ≈ 0.
 - Source flags collinear with rank scores; sweep should not co-vary them blindly.
 
+## Smoke Test (20 sessions, 160 turns)
+
+Run: `--tt_pool 1000 --artist_expansion --last_nn_k 100 --last_nn_src 2
+--bm25_missing_floor 0.05 --w_tt_rank 0 --w_artist 0 --w_nn 0 --w_bm25_origin 0
+--write_provenance exp/analysis/prov_smoke.jsonl` (config B = parity baseline).
+
+- Throughput: ~2.35 s / turn (≈ 40 min for full 1000 sessions).
+- Pool size: ≈ 1400 (matches sweep prediction).
+- Provenance schema verified end-to-end.
+- Example failure already visible (turn 2 of first session): gold found only by TT
+  at tt_rank=198, final_rank=435. Exactly the rescued-but-not-ranked case.
+
+Next: run full 1000-session config-A vs config-B parity, then sweep.
+
 ## Score Targets
 
 - Step 5 baseline (no calibration): expected ~0.1518 (parity).
