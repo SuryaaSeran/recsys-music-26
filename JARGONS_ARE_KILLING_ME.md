@@ -191,74 +191,101 @@ added to the candidate pool before scoring.
 
 ## Artist signal
 
-### How artists are identified
+The artist signal asks: "is this track by an artist the user or the session already
+cares about, and how prominent is it in that artist's catalog?"
 
-At startup, a dict `artist_to_tids` is built from track metadata: for every track,
-each artist name is lowercased and mapped to that track's ID. Each artist's list is
-capped at `--artist_cap` (default 50) tracks in metadata order.
+It has three pieces:
+1. **Identify** which artists are in scope for this turn.
+2. **Expand** the pool with each of those artists' top tracks.
+3. **Score** each expanded track by its position within the artist's catalog.
 
-At query time, two sources of artist names are collected:
+### 1. Building the artist catalog (once, at startup)
 
-1. Text history: every user/assistant turn is scanned for verbatim artist name matches
-   (longest-match-first to avoid substring collisions). Match source = `"user_text"`.
-2. Play history: the `artist_name` field of each recently played track. Match source =
-   `"played_track_artist"`.
+At startup we build a dict `artist_to_tids: artist_name_lowercased -> [track_id, ...]`.
 
-All tracks from matched artists' catalogs (up to the cap) are added to the pool.
+For every track in the metadata:
+- For each artist name on the track, lowercased and trimmed:
+- Append `(popularity, track_id)` to that artist's bucket.
 
-### Example (session `ba3da7b0`, turn 4)
+After every track has been bucketed, **each artist's bucket is sorted by `popularity`
+descending** and then truncated to `--artist_cap` tracks (default 50).
 
-By turn 4 the conversation looks like:
+So `artist_to_tids["arctic monkeys"][0]` is the **most popular** Arctic Monkeys track
+in the catalog. `[1]` is the second most popular. And so on.
+
+(Earlier version of this code used insertion order from the HuggingFace dataset, which
+was effectively arbitrary -- "rank 0" did not mean anything useful. That has been
+fixed: see commit `decb932`.)
+
+### 2. Picking which artists to expand at query time
+
+Two sources of artist names are scanned:
+
+1. **Text history**: every user/assistant turn so far is searched for verbatim
+   catalog-artist matches, longest-first so "Arctic Monkeys" is not confused with
+   "Arctic". Match source recorded as `"user_text"`.
+2. **Play history**: the `artist_name` field of each previously played track. Match
+   source recorded as `"played_track_artist"` (text-history matches win the tie).
+
+For each matched artist, every track in `artist_to_tids[artist_lc]` that the user has
+not already seen is added to the candidate pool.
+
+### 3. Per-track signal
+
+A candidate may come in via multiple matched artists (rare, but e.g. collaborations).
+For each candidate we record the **minimum rank** across all matched-artist lists:
 
 ```
-[user] "Play Heart-Shaped Box by Nirvana"
-[music] Heart-Shaped Box (played)
-[assistant] ...
-[user] "What other popular alternative rock tracks do you recommend?"
-[music] Fluorescent Adolescent by Arctic Monkeys (played)
-[assistant] ...
-[user] "Yes, great! What else from Arctic Monkeys?"
-[music] D Is For Dangerous by Arctic Monkeys (played)
-[assistant] ...
-[user] "Another solid track. Can you recommend another highly popular alternative rock track?"
+artist_rank(candidate) = min position of candidate in any matched artist's sorted list
 ```
 
-Artist names collected at turn 5:
-
-- From **text history**: the user said "Arctic Monkeys" explicitly -- verbatim match
-  against the catalog dict -> `mentioned["arctic monkeys"] = "user_text"`
-- From **play history**: Heart-Shaped Box has `artist_name = ["Nirvana"]`, Fluorescent
-  Adolescent and D Is For Dangerous both have `artist_name = ["Arctic Monkeys"]` ->
-  `mentioned["nirvana"] = "played_track_artist"`, `mentioned["arctic monkeys"]` already
-  set so not overwritten.
-
-Catalog expansion:
-
-- `artist_to_tids["arctic monkeys"]` -- up to 50 Arctic Monkeys tracks added to pool,
-  ordered as they appear in the metadata. e.g. "R U Mine?" at index 0, "Do I Wanna
-  Know?" at index 1, etc.
-- `artist_to_tids["nirvana"]` -- up to 50 Nirvana tracks added.
-
-Signal for "R U Mine?" by Arctic Monkeys: `artist_rank = 0`,
-`artist_sig = 1 / log2(0 + 2) = 1.0` (maximum).
-
-Signal for the 10th Arctic Monkeys track in the list: `artist_rank = 9`,
-`artist_sig = 1 / log2(9 + 2) = 1 / log2(11) ≈ 0.29`.
-
-Already-played tracks are in `seen` and skipped before being added to the pool, so
-Heart-Shaped Box, Fluorescent Adolescent, and D Is For Dangerous are never candidates.
-
-### Signal value
-
-`artist_rank` = 0-based position of the candidate within the matched artist's catalog
-list (minimum across artists if the candidate belongs to multiple matched artists).
+The score signal is:
 
 ```
 artist_sig = 1 / log2(artist_rank + 2)
 ```
 
-0 for candidates with no artist match. Rank 0 (first track in catalog) gives the
-maximum signal of `1 / log2(2) = 1.0`.
+- `artist_rank = 0` (most popular track for the artist)   -> `1 / log2(2)  = 1.0`
+- `artist_rank = 1`                                       -> `1 / log2(3)  ≈ 0.63`
+- `artist_rank = 4`                                       -> `1 / log2(6)  ≈ 0.39`
+- `artist_rank = 9`                                       -> `1 / log2(11) ≈ 0.29`
+- `artist_rank = 49` (last slot under the cap)            -> `1 / log2(51) ≈ 0.18`
+- No artist match                                         -> `0`
+
+This is a smooth decay, not a hard flag: a popular catalog track is preferred to a
+deep-cut by the same artist, but both stay above zero.
+
+### Worked example (session `ba3da7b0`, turn 5)
+
+```
+[user] "Play Heart-Shaped Box by Nirvana"
+[music] Heart-Shaped Box played
+[user] "What other popular alternative rock tracks do you recommend?"
+[music] Fluorescent Adolescent by Arctic Monkeys played
+[user] "Yes, great! What else from Arctic Monkeys?"
+[music] D Is For Dangerous by Arctic Monkeys played
+[user] "Another solid track. Can you recommend another highly popular alternative rock track?"
+```
+
+Artists identified at turn 5:
+
+- `"arctic monkeys"` -> source `"user_text"` (user typed it in turn 3).
+- `"nirvana"`        -> source `"played_track_artist"` (from Heart-Shaped Box's
+                       metadata; user never typed "Nirvana" verbatim).
+
+Catalog expansion:
+
+- `artist_to_tids["arctic monkeys"][:50]` -> up to 50 Arctic Monkeys tracks added,
+  highest-popularity first. Heart-Shaped-Box, Fluorescent Adolescent, and D Is For
+  Dangerous are in `seen` and skipped.
+- `artist_to_tids["nirvana"][:50]` -> up to 50 Nirvana tracks added.
+
+If the top Arctic Monkeys track by popularity is "Do I Wanna Know?", it lands at
+`artist_rank = 0` with `artist_sig = 1.0`. The 10th-most-popular track sits at
+`artist_rank = 9` with `artist_sig ≈ 0.29`.
+
+If a single track happens to be in *both* matched artists' lists (it won't here, but
+e.g. a collaboration), it gets the **minimum** of the two ranks.
 
 ---
 
