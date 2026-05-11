@@ -80,6 +80,35 @@ Not yet re-run with this config. Next blind submission should regenerate using
 the same flags above against `talkpl-ai/TalkPlayData-Challenge-Blind-A` via
 `run_inference_blind_fusion.py` (needs --last_nn_k and --artist_expansion ported).
 
+## Organizer baselines (full 1000-session dev nDCG@20)
+
+Measured locally with `scripts/inference/evaluate_local.py` against the shipped
+baseline scripts under `music-crs-baselines/`.
+
+| Baseline | Source | nDCG@1 | nDCG@10 | nDCG@20 | Hit@20 |
+|---|---|---:|---:|---:|---:|
+| Random sample (20 tracks)        | `music-crs-baselines/lowerbound/random_sample.py` | 0.0000 | 0.0002 | 0.0002 | 0.1% |
+| Popularity (top-20 train tracks) | `music-crs-baselines/lowerbound/popularity.py`    | 0.0005 | 0.0018 | 0.0024 | 0.6% |
+| BM25 (Llama-3.2-1B response)     | `music-crs-baselines/run_inference_devset.py` cfg `llama1b_bm25_devset` | — | — | not measured (LLM-gated) | — |
+| BERT dense (Llama-3.2-1B resp.)  | `music-crs-baselines/run_inference_devset.py` cfg `llama1b_bert_devset` | — | — | not measured (LLM-gated) | — |
+
+BM25 / BERT require the Llama-3.2-1B inference pipeline (flash-attn, GPU); not
+run locally. Our own BM25-only configuration (corpus = name+artist+album,
+identical to the organizer BM25 retrieval side) scored 0.0861 nDCG@20 — that's
+the comparable retrieval-only floor.
+
+## Current system vs baselines
+
+| System | nDCG@20 | Hit@20 | Lift vs popularity | Lift vs our BM25 floor |
+|---|---:|---:|---:|---:|
+| Random                                                               | 0.0002 | 0.1%  | -      | -      |
+| Popularity                                                           | 0.0024 | 0.6%  | -      | -      |
+| Our BM25 floor (name+artist+album)                                   | 0.0861 | 21.9% | x36    | -      |
+| Our BM25 + tag_list + seen exclusion                                 | 0.1313 | 27.4% | x55    | +52%   |
+| Our TT-v3 fusion (pool=500, w=0.7)                                   | 0.1418 | 29.8% | x59    | +65%   |
+| Our v6 fusion v13_tuned (BM25@500 only)                              | 0.1519 | 31.5% | x63    | +76%   |
+| **Our v6 fusion + expansion (artist + TT@1000 + NN@100), v13 wts**   | **0.1533** | **31.7%** | **x64** | **+78%** |
+
 ## Previous bests
 
 | Date | nDCG@20 | Pool | Rescore | Note |
