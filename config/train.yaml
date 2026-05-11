@@ -1,0 +1,6 @@
+embedding_path: data/track_embeddings.npy
+track_ids_path: data/track_ids.txt
+codebook_save_path: data/codebook.pkl
+
+n_coarse: 128
+n_fine: 128

@@ -1,0 +1,24 @@
+model: models/qwen_sid_patched
+adapter_path: adapters/qwen_balanced_v1
+data: data/sft_balanced_v1
+
+fine_tune_type: lora
+train: true
+iters: 3000
+mask_prompt: true
+learning_rate: 1.0e-4
+batch_size: 2
+grad_accumulation_steps: 4
+max_seq_length: 512
+
+lora_parameters:
+  rank: 16
+  dropout: 0.05
+  scale: 20.0
+
+steps_per_eval: 200
+steps_per_report: 10
+save_every: 200
+val_batches: 25
+seed: 42
+num_layers: 16

@@ -1,0 +1,30 @@
+# Core ML
+torch>=2.2.0
+transformers>=4.40.0
+peft>=0.10.0
+trl>=0.8.0
+accelerate>=0.28.0
+bitsandbytes>=0.43.0
+
+# Embeddings & retrieval
+scikit-learn>=1.4.0
+faiss-cpu>=1.8.0
+rank_bm25>=0.2.2
+sentence-transformers>=2.7.0
+
+# Data
+datasets>=2.18.0
+huggingface_hub>=0.22.0
+numpy>=1.26.0
+pandas>=2.2.0
+
+# Inference
+vllm>=0.4.0
+
+# Evaluation
+nltk>=3.8.0
+
+# Utils
+tqdm>=4.66.0
+pyyaml>=6.0.0
+loguru>=0.7.0
