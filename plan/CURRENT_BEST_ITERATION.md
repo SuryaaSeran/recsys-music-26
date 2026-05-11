@@ -2,15 +2,21 @@
 
 Live snapshot. Update only when full 1000-session dev nDCG@20 strictly beats this.
 
-## Best (as of 2026-05-11)
+## Best (as of 2026-05-11, LTR v2)
 
-- **Dev nDCG@20: 0.1533**
-- **Hit@20: 31.7%** (2538 / 8000 turns)
-- Script: `scripts/inference/run_inference_fusion_recall_expansion.py`
-- Run id: `v07_parity_B` (`exp/inference/devset/v07_parity_B.json`)
-- One-line reason it beat the prior best: adding last-track TT-NN@100 to the
-  candidate pool lets a small fraction of NN-source gold tracks outscore BM25
-  incumbents under the existing fusion weights.
+- **Dev nDCG@20: 0.1601**
+- **Hit@20: 34.0%** (2719 / 8000 turns)
+- nDCG@1 0.0525  |  nDCG@10 0.1373  |  catalog_div 0.568  |  lex_div 0.203
+- Script: `scripts/inference/run_inference_fusion_recall_expansion.py --ltr_model models/ltr/ltr_v2_train.txt`
+- Run id: `ltr_v2_dev_eval` (`exp/inference/devset/ltr_v2_dev_eval.json`)
+- Booster: `models/ltr/ltr_v2_train.txt` (LightGBM LambdaMART, 44 trees, 15
+  features) trained on 2000 random TRAIN-split sessions
+  (`--shuffle_seed 42`, ~17.7M candidate rows). 5-fold CV ndcg@20 on train =
+  0.4063 (std 0.0094). No dev-set leakage.
+- One-line reason it beat prior best: a tree ranker on the same 15 features
+  picks up source-aware interactions (BM25-origin × bm25_signal,
+  cold_user × cf_cos, multi-source × cosine combos) that the linear fusion
+  cannot express.
 
 ### Retrieval pool
 
@@ -32,7 +38,25 @@ Reach metrics (8000 turns, audit):
 | + TT-v6@1000                            | 0.806 |
 | + last-track-NN@100                     | 0.808 |
 
-### Rescore
+### Rescore (LTR booster, replaces linear sum)
+
+For each candidate the inference script builds the 15-feature vector
+documented in `FEATURE_COLS` (in `run_inference_fusion_recall_expansion.py`).
+The booster outputs a single relevance score per candidate; top-20 by that
+score is the prediction.
+
+Top feature gains (training data):
+```
+tt_cos          ████████████████████
+tt_rank_sig     ████████████
+artist_sig      ██████████
+bm25_signal     ████████
+nn_sig          ██
+qm_cos, cf_cos, pool_size, artist_origin, ql_cos  (small)
+```
+
+Linear baseline kept as a fallback path in the same script if `--ltr_model`
+is not passed:
 
 ```
 score = w_tt          * tt_cosine
@@ -61,17 +85,35 @@ bm25_missing_floor = 0.05
 w_tt_rank = w_artist = w_nn = w_bm25_origin = 0
 ```
 
-Reproduction:
+Reproduction (LTR best):
 
 ```bash
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
 python scripts/inference/run_inference_fusion_recall_expansion.py \
   --tid current_best \
   --tt_model models/twotower_v6/final --tt_index cache/twotower_v6 \
   --tt_pool 1000 --artist_expansion --last_nn_k 100 --last_nn_src 2 \
   --bm25_missing_floor 0.05 \
-  --w_tt 0.32 --w_cf 0.10 --w_qwen_meta 0.40 --w_qwen_lyrics 0.08 \
-  --w_clap 0.05 --w_bm25 0.24 \
-  --w_tt_rank 0 --w_artist 0 --w_nn 0 --w_bm25_origin 0
+  --ltr_model models/ltr/ltr_v2_train.txt
+```
+
+Booster retraining:
+
+```bash
+# 1) feature dump from a sample of TRAIN sessions
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+python scripts/inference/run_inference_fusion_recall_expansion.py \
+  --tid v07_train_features --split train --sessions 2000 --shuffle_seed 42 \
+  --tt_model models/twotower_v6/final --tt_index cache/twotower_v6 \
+  --tt_pool 1000 --artist_expansion --last_nn_k 100 --last_nn_src 2 \
+  --bm25_missing_floor 0.05 \
+  --write_features exp/analysis/ltr_train_features.npz
+
+# 2) train LightGBM LambdaMART
+python scripts/train/train_ltr_lightgbm.py \
+  --features exp/analysis/ltr_train_features.npz \
+  --out models/ltr/ltr_v2_train.txt \
+  --n_folds 5 --num_leaves 63 --lr 0.05 --num_iter 1000 --early_stop 50
 ```
 
 ### Tested on Blind A
@@ -114,7 +156,8 @@ LLaMA-1B + BM25 is the organizer's reference retrieval baseline.
 | Our BM25 + tag_list + seen exclusion                                 | —      | —      | 0.1313 | —      | —      | 27.4% |
 | Our TT-v3 fusion (pool=500, w=0.7)                                   | —      | —      | 0.1418 | —      | —      | 29.8% |
 | Our v6 fusion v13_tuned (BM25@500 only)                              | —      | —      | 0.1519 | —      | —      | 31.5% |
-| **Our v6 fusion + expansion (artist + TT@1000 + NN@100), v13 wts**   | **0.0551** | **0.1328** | **0.1533** | **0.5119** | **0.1844** | **31.7%** |
+| Our v6 fusion + expansion (artist + TT@1000 + NN@100), v13 wts       | 0.0551 | 0.1328 | 0.1533 | 0.5119 | 0.1844 | 31.7% |
+| **Our v6 fusion + expansion + LTR LambdaMART (train-only)**          | **0.0525** | **0.1373** | **0.1601** | **0.5677** | **0.2026** | **34.0%** |
 
 Notes:
 - Our current best (0.1533 nDCG@20) is **+0.0718 over the strongest organizer
@@ -193,6 +236,7 @@ Limitations:
 
 | Date | nDCG@20 | Pool | Rescore | Note |
 |---|---|---|---|---|
+| 2026-05-11 | 0.1533 | BM25@500 + artist + TT@1000 + NN@100 | v13_tuned linear | Pool expansion (NN@100) over BM25-only pool, same weights. |
 | 2026-05-05 | 0.1519 | BM25@500 only | v13_tuned weights | Prior best. Blind file: `blind_a_fusion_v13_tuned_qwen.json`. |
 | 2026-05-04 | 0.1518 | BM25@500 + artist + TT-v6@1000 | v13_tuned + floor=0.05 | Expansion pool without NN; same weights. |
 | 2026-04-30 | 0.1473 | BM25@500 | v6 fusion (precursor to v13) |  |

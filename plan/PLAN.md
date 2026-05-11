@@ -23,7 +23,8 @@ Quick path for a new session:
 ## Score ladder (full 1000-session dev nDCG@20)
 
 ```
-0.1533  v6 fusion + recall expansion (artist + TT@1000 + last-NN@100), v13 wts  <- current best (2026-05-11)
+0.1601  v6 fusion + expansion + LTR LambdaMART (train-only)                      <- current best (2026-05-11 LTR v2)
+0.1533  v6 fusion + recall expansion (artist + TT@1000 + last-NN@100), v13 wts
 0.1519  v6 fusion, v13_tuned weights, BM25@500 pool only
 0.1518  v6 fusion + recall expansion (artist + TT@1000, no NN), v13 wts
 0.1473  v6 fusion v6 (precursor to v13)
