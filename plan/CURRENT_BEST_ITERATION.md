@@ -1,62 +1,53 @@
 # Current Best Iteration
 
-Snapshot of the best-tested recall pool and rescore method, including what has been
-run on the blind dataset.
+Live snapshot. Update only when full 1000-session dev nDCG@20 strictly beats this.
 
-## Headline
+## Best (as of 2026-05-11)
 
-- Dev nDCG@20: 0.1519 (1000 sessions, full 8000 turns)
-- Dev Hit@20: 31.5%
-- Pool recall ceiling (where gold is reachable at all): 80.6% at total pool ≈ 1500
-- Pool recall actually used in scored pipeline: BM25@500 only (59.0%)
-- Gap: pool recall reachable (80.6%) vs ranking ceiling realized (gold-in-top-20)
-  is dominated by the rescore step, not retrieval.
+- **Dev nDCG@20: 0.1533**
+- **Hit@20: 31.7%** (2538 / 8000 turns)
+- Script: `scripts/inference/run_inference_fusion_recall_expansion.py`
+- Run id: `v07_parity_B` (`exp/inference/devset/v07_parity_B.json`)
+- One-line reason it beat the prior best: adding last-track TT-NN@100 to the
+  candidate pool lets a small fraction of NN-source gold tracks outscore BM25
+  incumbents under the existing fusion weights.
 
-## Best Retrieval Pool (recall-only, no rescore)
-
-Measured on full 1000 dev sessions / 8000 turns. TT = two-tower v6.
-
-| Pool | Recall | Total pool size |
-|---|---|---|
-| BM25@500 only | 0.590 | 500 |
-| BM25@500 + artist expansion | 0.651 | ~700 (var.) |
-| BM25@500 + TT-v6@500 | 0.729 | ~1000 |
-| BM25@500 + artist + TT-v6@500 | 0.755 | ~1200 |
-| BM25@500 + artist + TT-v6@1000 | 0.806 | ~1500 |
-
-Source files:
-- `exp/analysis/recall_v6_baseline.txt`
-- `exp/analysis/recall_v6_artist_expansion.txt`
-- `exp/analysis/recall_v6_combined.txt`
-- `exp/analysis/recall_audit_summary.txt`
-
-Notes:
-- Artist expansion = scan all conversation text + played-track artist names, add every
-  catalog track for each verbatim-mentioned artist. Implementation in
-  `scripts/inference/measure_recall_artist_expansion.py`.
-- Qwen-meta @500 union adds ~+1.5%; Qwen-lyrics adds ~+1%; CLAP negligible; CF (warm
-  only) adds ~+2%. None beat the cost of TT depth expansion.
-- BM25 query/index tuning has not improved pool recall (any reformulation tested so
-  far either matches or hurts; field-weighted index hurt -1.9%).
-
-## Best Rescore Method (currently submitted on blind)
-
-Script (dev): `scripts/inference/run_inference_fusion.py`
-Script (blind): `scripts/inference/run_inference_blind_fusion.py`
-
-Pool used by rescore: BM25@500 only (no artist or TT recall expansion).
-Per-candidate score (linear fusion):
+### Retrieval pool
 
 ```
-score = w_tt          * tt_cosine          (two-tower v6)
-      + w_qwen_meta   * qwen3_meta_cosine
-      + w_qwen_lyrics * qwen3_lyrics_cosine
-      + w_clap        * clap_text_cosine
-      + w_cf          * cf_bpr_cosine      (warm users only; 0 for cold)
-      + w_bm25        * bm25_norm          (s / s_max within retrieved pool)
+BM25@500
++ artist expansion (popularity-sorted catalog, --artist_cap 50)
++ TT-v6@1000
++ last-track-NN@100 in TT space (last_nn_src=2)
 ```
 
-Weights (grid-searched, v13_tuned):
+Mean deduped pool size: ~1450.
+
+Reach metrics (8000 turns, audit):
+
+| Source | Cumulative pool recall |
+|---|---|
+| BM25@500                                | 0.590 |
+| + artist expansion                      | 0.651 |
+| + TT-v6@1000                            | 0.806 |
+| + last-track-NN@100                     | 0.808 |
+
+### Rescore
+
+```
+score = w_tt          * tt_cosine
+      + w_qwen_meta   * qm_cosine
+      + w_qwen_lyrics * ql_cosine
+      + w_clap        * clap_cosine
+      + w_cf          * cf_cosine                 # warm users only
+      + w_bm25        * bm25_signal               # = bm25_norm if in BM25 pool else floor
+      + w_tt_rank     * tt_rank_sig               # 0 in this iter
+      + w_artist      * artist_sig                # 0 in this iter
+      + w_nn          * nn_sig                    # 0 in this iter
+      + w_bm25_origin * bm25_origin               # 0 in this iter
+```
+
+Weights (v13_tuned + new features at 0):
 
 ```
 w_tt          = 0.32
@@ -65,34 +56,36 @@ w_qwen_lyrics = 0.08
 w_clap        = 0.05
 w_cf          = 0.10
 w_bm25        = 0.24
-bm25_norm     = True   (s / s_max, not reciprocal rank)
+bm25_norm     = True
+bm25_missing_floor = 0.05
+w_tt_rank = w_artist = w_nn = w_bm25_origin = 0
 ```
 
-Dev nDCG@20 = 0.1519, Hit@20 = 31.5% (1000 sessions, verified via
-`score_precomputed.py` exact reproduction).
+Reproduction:
 
-## Tested on Blind A
+```bash
+python scripts/inference/run_inference_fusion_recall_expansion.py \
+  --tid current_best \
+  --tt_model models/twotower_v6/final --tt_index cache/twotower_v6 \
+  --tt_pool 1000 --artist_expansion --last_nn_k 100 --last_nn_src 2 \
+  --bm25_missing_floor 0.05 \
+  --w_tt 0.32 --w_cf 0.10 --w_qwen_meta 0.40 --w_qwen_lyrics 0.08 \
+  --w_clap 0.05 --w_bm25 0.24 \
+  --w_tt_rank 0 --w_artist 0 --w_nn 0 --w_bm25_origin 0
+```
 
-| File | System | Status |
-|---|---|---|
-| `exp/inference/blind_a/blind_a_fusion_v13_tuned.json` | v13 fusion weights above | Predictions generated |
-| `exp/inference/blind_a/blind_a_fusion_v13_tuned_qwen.json` | + Qwen responses | Generated |
-| `exp/inference/blind_a/blind_a_fusion_v9_norm_qwen.json` | v9 fusion (dev 0.1489) | Fallback |
-| `exp/inference/blind_a/blind_a_fusion_v6_qwen.json` | v6 fusion (dev 0.1473) | Fallback |
-| `exp/inference/blind_a/blind_a_twotower_v3_qwen.json` | TT-v3 + BM25 only (dev 0.1418) | Fallback |
-| `exp/inference/blind_a/blind_a_v2_qwen.json` | BM25 + tag + seen excl (dev 0.1313) | Submitted earlier |
+### Tested on Blind A
 
-No blind submission uses recall expansion (artist or TT pool). The rescore-on-expanded
-pool variant (`run_inference_fusion_recall_expansion.py`) was tested on dev only: with
-BM25_missing_floor=0.05 it produced nDCG = 0.1518 — no gain over the BM25@500-only pool.
-Cause: rescued candidates start with bm25_signal=floor, can't out-score BM25 rank-1
-incumbents under current weights.
+Not yet re-run with this config. Next blind submission should regenerate using
+the same flags above against `talkpl-ai/TalkPlayData-Challenge-Blind-A` via
+`run_inference_blind_fusion.py` (needs --last_nn_k and --artist_expansion ported).
 
-## What this implies for next work
+## Previous bests
 
-- Pool recall at the size we actually rescore (≈500) is the bottleneck: 59.0% BM25
-  vs 80.6% reachable. Closing this gap at small pool size is the highest-leverage move.
-- Rescore-side fixes (source-aware weights, BM25 floor sweep) need to be paired with
-  pool-side fixes; rescore alone with BM25@500 cannot exceed 59.0% gold availability.
-- For blind submission, current best stays `blind_a_fusion_v13_tuned_qwen.json` until
-  a higher dev nDCG run is reproduced.
+| Date | nDCG@20 | Pool | Rescore | Note |
+|---|---|---|---|---|
+| 2026-05-05 | 0.1519 | BM25@500 only | v13_tuned weights | Prior best. Blind file: `blind_a_fusion_v13_tuned_qwen.json`. |
+| 2026-05-04 | 0.1518 | BM25@500 + artist + TT-v6@1000 | v13_tuned + floor=0.05 | Expansion pool without NN; same weights. |
+| 2026-04-30 | 0.1473 | BM25@500 | v6 fusion (precursor to v13) |  |
+| 2026-04-25 | 0.1418 | BM25@500 | TT-v3 + w=0.7 | First two-tower production. |
+| 2026-04-15 | 0.1313 | BM25@500 | BM25 only + tag + seen exclusion | BM25 ceiling. |

@@ -147,6 +147,36 @@ To create:
   a large sentinel so 1/log2 ≈ 0.
 - Source flags collinear with rank scores; sweep should not co-vary them blindly.
 
+## Result: full 1000-session parity-B (no new features)
+
+Config B (expansion pool with last-track-NN@100, v13 weights, all new
+`w_*=0`, `bm25_missing_floor=0.05`) ran on the full dev set:
+
+```
+nDCG@20  0.1533   (+0.0014 over prior best 0.1519)
+Hit@20   31.7%
+```
+
+The +0.0014 is entirely from adding NN@100 candidates -- the rescore is
+identical to v13. The prior expansion-pool-without-NN tested at 0.1518, so
+this is a real, NN-attributable lift. Updated
+`plan/CURRENT_BEST_ITERATION.md`.
+
+This invalidates the "parity must match A==B within 0.0005" check from earlier
+in this plan -- because the new pool is strictly larger (adds NN candidates),
+A and B were never going to match. The relevant comparison is:
+
+```
+old pool   (artist + TT@1000)             v13 weights  ->  0.1518
+new pool   (artist + TT@1000 + NN@100)    v13 weights  ->  0.1533  (+0.0015)
+```
+
+That is the NN ablation, and it positive.
+
+Next: continue Step 6 -- sweep `w_tt_rank, w_artist, w_nn, w_bm25_origin,
+bm25_missing_floor` on top of this 0.1533 baseline. Bucket-level reporting
+(BM25-hit / artist-rescue / TT-rescue / NN-rescue top-20 rates) is still TBD.
+
 ## Smoke Test (20 sessions, 160 turns)
 
 Run: `--tt_pool 1000 --artist_expansion --last_nn_k 100 --last_nn_src 2
