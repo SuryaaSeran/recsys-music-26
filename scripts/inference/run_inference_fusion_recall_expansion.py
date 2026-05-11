@@ -85,6 +85,8 @@ parser.add_argument("--w_bm25_origin", type=float, default=0.0,
                     help="Bonus added to BM25-origin candidates (preservation feature).")
 parser.add_argument("--write_provenance", default="",
                     help="If set, write per-turn provenance JSONL to this path.")
+parser.add_argument("--write_features", default="",
+                    help="If set, write per-candidate feature rows to this NPZ path for LTR training.")
 args = parser.parse_args()
 
 BM25_CACHE = "cache/bm25/track_metadata"
@@ -244,6 +246,19 @@ if args.write_provenance:
     Path(args.write_provenance).parent.mkdir(parents=True, exist_ok=True)
     prov_fh = open(args.write_provenance, "w")
     print(f"Writing provenance to {args.write_provenance}")
+
+# LTR feature dump buffers (concatenated at end). Schema documented in header.
+FEATURE_COLS = [
+    "tt_cos", "qm_cos", "ql_cos", "clap_cos", "cf_cos",
+    "bm25_signal", "tt_rank_sig", "artist_sig", "nn_sig",
+    "bm25_origin", "artist_origin", "tt_origin", "nn_origin",
+    "cold_user", "pool_size",
+]
+feat_chunks: list = []
+label_chunks: list = []
+group_chunks: list = []   # turn-index per row
+turn_meta: list = []      # one per turn: {session_id, turn_number, gold}
+turn_counter = [0]        # mutable counter for closures
 
 for item in tqdm(sessions, desc="Sessions"):
     session_id  = item["session_id"]
@@ -452,6 +467,53 @@ for item in tqdm(sessions, desc="Sessions"):
                 args.w_bm25_origin * bm25_origin_sig
             )
 
+        # --- LTR feature capture (optional) ---
+        if args.write_features:
+            gold_tid = turn["content"]
+            cold_user_flag = 1.0 if cf_all is None else 0.0
+            n_cands_local = len(cands)
+            feat = np.zeros((n_cands_local, len(FEATURE_COLS)), dtype=np.float32)
+            lbl  = np.zeros(n_cands_local, dtype=np.int8)
+            for i, tid in enumerate(cands):
+                bm25_s = bm25_native_sig.get(tid, args.bm25_missing_floor)
+                idx_tt = tt_id2idx.get(tid)
+                idx_qm = qwen_meta_id2idx.get(tid)
+                idx_ql = qwen_lyrics_id2idx.get(tid) if ql_all is not None else None
+                idx_c  = clap_id2idx.get(tid)
+                idx_cf = cf_track_id2idx.get(tid) if cf_all is not None else None
+                tt_rank = tt_rank_map.get(tid)
+                tt_rank_sig_f = (1.0 / np.log2(tt_rank + 2.0)) if tt_rank is not None else 0.0
+                artist_rank = artist_rank_map.get(tid)
+                artist_sig_f  = (1.0 / np.log2(artist_rank + 2.0)) if artist_rank is not None else 0.0
+                nn_rank = nn_rank_map.get(tid)
+                nn_sig_f  = (1.0 / np.log2(nn_rank + 2.0)) if nn_rank is not None else 0.0
+                srcs = sources.get(tid, ())
+                feat[i] = (
+                    float(tt_all[idx_tt])   if idx_tt is not None else 0.0,
+                    float(qm_all[idx_qm])   if idx_qm is not None else 0.0,
+                    float(ql_all[idx_ql])   if idx_ql is not None and ql_all is not None else 0.0,
+                    float(clap_all[idx_c])  if idx_c  is not None else 0.0,
+                    float(cf_all[idx_cf])   if idx_cf is not None and cf_all is not None else 0.0,
+                    bm25_s,
+                    tt_rank_sig_f,
+                    artist_sig_f,
+                    nn_sig_f,
+                    1.0 if "bm25"   in srcs else 0.0,
+                    1.0 if "artist" in srcs else 0.0,
+                    1.0 if "tt"     in srcs else 0.0,
+                    1.0 if "nn"     in srcs else 0.0,
+                    cold_user_flag,
+                    float(n_cands_local),
+                )
+                if tid == gold_tid:
+                    lbl[i] = 1
+            feat_chunks.append(feat)
+            label_chunks.append(lbl)
+            group_chunks.append(np.full(n_cands_local, turn_counter[0], dtype=np.int32))
+            turn_meta.append({"session_id": session_id, "turn_number": turn_number,
+                              "gold": gold_tid, "n_cands": n_cands_local})
+            turn_counter[0] += 1
+
         top_idx = np.argsort(total_arr)[::-1][:args.topk]
         predicted_track_ids = [cands[i] for i in top_idx]
 
@@ -507,3 +569,18 @@ with open(out_path, "w") as f:
 print(f"Saved {len(inference_results):,} predictions to {out_path}")
 if prov_fh is not None:
     prov_fh.close()
+
+if args.write_features and feat_chunks:
+    out = Path(args.write_features)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    X = np.concatenate(feat_chunks, axis=0)
+    y = np.concatenate(label_chunks, axis=0)
+    g = np.concatenate(group_chunks, axis=0)
+    np.savez_compressed(out, X=X, y=y, group=g, feature_cols=np.array(FEATURE_COLS))
+    sidecar = out.with_suffix(".meta.json")
+    with open(sidecar, "w") as f:
+        json.dump({"feature_cols": FEATURE_COLS,
+                   "n_turns": len(turn_meta),
+                   "n_rows": int(X.shape[0]),
+                   "turn_meta": turn_meta}, f)
+    print(f"Saved features: {X.shape} -> {out}  (sidecar {sidecar})")
