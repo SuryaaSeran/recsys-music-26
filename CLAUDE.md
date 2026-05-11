@@ -30,6 +30,24 @@ Prefer action over explanation.
 Explain only when useful.
 Ask only when blocked.
 
+## Plan lifecycle (must follow)
+
+Authoritative process is in `WORKFLOW.md`. Summary:
+
+- One active phase plan at a time: `plan/0N_<name>.md`.
+- Update `plan/CURRENT_BEST_ITERATION.md` the moment dev nDCG@20 (full 1000
+  sessions) strictly beats the previous entry. Demote the old config to a
+  one-liner in the "Previous bests" section.
+- Update `plan/PLAN.md` score ladder only for full 1000-session results.
+- Close a phase: move its plan into `plan/archive/` and replace the active entry
+  in `plan/PLAN.md` with a one-line summary + archive link.
+- Record only iterations that affected the conclusion, not every parameter tried.
+
+When starting any session, read in this order:
+1. `plan/PLAN.md`
+2. `plan/CURRENT_BEST_ITERATION.md`
+3. The single active `plan/0N_*.md`
+
 ## Planning Rules
 
 Always check the `plan/` folder first.
