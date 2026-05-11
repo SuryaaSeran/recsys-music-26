@@ -48,6 +48,10 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--tt_model",    default="models/twotower_v3/final")
 parser.add_argument("--tt_index",    default="cache/twotower_v3")
 parser.add_argument("--sessions",    type=int,   default=0)
+parser.add_argument("--split",       default="test", choices=["test", "train"],
+                    help="Which dataset split to run on.")
+parser.add_argument("--shuffle_seed", type=int, default=-1,
+                    help=">=0: shuffle sessions before taking --sessions slice (deterministic).")
 parser.add_argument("--tid",         default="fusion_recall_v1")
 parser.add_argument("--out_dir",     default="exp/inference/devset")
 parser.add_argument("--topk",        type=int,   default=20)
@@ -240,9 +244,13 @@ for uid, vec in user_cf_raw.items():
 
 print("Loading dev sessions...")
 ds = load_dataset("talkpl-ai/TalkPlayData-Challenge-Dataset")
-sessions = list(ds["test"])
+sessions = list(ds[args.split])
+if args.shuffle_seed >= 0:
+    import random as _r
+    _r.Random(args.shuffle_seed).shuffle(sessions)
 if args.sessions > 0:
     sessions = sessions[:args.sessions]
+print(f"Using split={args.split}  n_sessions={len(sessions)}  shuffle_seed={args.shuffle_seed}")
 
 print(
     f"Running {len(sessions)} sessions  "
