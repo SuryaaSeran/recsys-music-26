@@ -100,7 +100,16 @@ Eval loss improved through all of epoch 2 (0.3027 → 0.2480). Best = `models/tw
 
 ---
 
-### Phase 7: Min-pool recall (active)
+### Phase 8: Source-aware ranking (active)
+**Status: Active** — details in [plan/07_ranking_calibration.md](07_ranking_calibration.md)
+
+Pool recall is no longer the bottleneck (0.808 reached). Goal: convert pool recall
+into nDCG by adding source-aware features (TT rank, artist hit, NN hit, BM25
+missing floor) for non-BM25 candidates.
+
+---
+
+### Phase 7: Min-pool recall
 **Status: Active** — details in [plan/06_min_pool_recall.md](06_min_pool_recall.md)
 
 Goal: maximize gold-in-pool recall at the smallest pool size.
