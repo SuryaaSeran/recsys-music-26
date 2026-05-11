@@ -80,34 +80,50 @@ Not yet re-run with this config. Next blind submission should regenerate using
 the same flags above against `talkpl-ai/TalkPlayData-Challenge-Blind-A` via
 `run_inference_blind_fusion.py` (needs --last_nn_k and --artist_expansion ported).
 
-## Organizer baselines (full 1000-session dev nDCG@20)
+## Evaluation standard
 
-Measured locally with `scripts/inference/evaluate_local.py` against the shipped
-baseline scripts under `music-crs-baselines/`.
+The official evaluator is at `music-crs-evaluator/` (mirrored in this repo).
+Numbers below are produced by that evaluator. Our local
+`scripts/inference/evaluate_local.py` mirrors it (per-turn-number macro-mean,
+no-duplicate check, plus catalog/lexical diversity). Reproduce ours with:
 
-| Baseline | Source | nDCG@1 | nDCG@10 | nDCG@20 | Hit@20 |
-|---|---|---:|---:|---:|---:|
-| Random sample (20 tracks)        | `music-crs-baselines/lowerbound/random_sample.py` | 0.0000 | 0.0002 | 0.0002 | 0.1% |
-| Popularity (top-20 train tracks) | `music-crs-baselines/lowerbound/popularity.py`    | 0.0005 | 0.0018 | 0.0024 | 0.6% |
-| BM25 (Llama-3.2-1B response)     | `music-crs-baselines/run_inference_devset.py` cfg `llama1b_bm25_devset` | — | — | not measured (LLM-gated) | — |
-| BERT dense (Llama-3.2-1B resp.)  | `music-crs-baselines/run_inference_devset.py` cfg `llama1b_bert_devset` | — | — | not measured (LLM-gated) | — |
+```bash
+python scripts/inference/evaluate_local.py --pred exp/inference/devset/<tid>.json
+```
 
-BM25 / BERT require the Llama-3.2-1B inference pipeline (flash-attn, GPU); not
-run locally. Our own BM25-only configuration (corpus = name+artist+album,
-identical to the organizer BM25 retrieval side) scored 0.0861 nDCG@20 — that's
-the comparable retrieval-only floor.
+## Organizer baselines (official scores, devset 1000 sessions)
 
-## Current system vs baselines
+Source: `music-crs-evaluator/exp/scores/devset/{random,popularity,llama1b_bm25_devset}.json`.
 
-| System | nDCG@20 | Hit@20 | Lift vs popularity | Lift vs our BM25 floor |
-|---|---:|---:|---:|---:|
-| Random                                                               | 0.0002 | 0.1%  | -      | -      |
-| Popularity                                                           | 0.0024 | 0.6%  | -      | -      |
-| Our BM25 floor (name+artist+album)                                   | 0.0861 | 21.9% | x36    | -      |
-| Our BM25 + tag_list + seen exclusion                                 | 0.1313 | 27.4% | x55    | +52%   |
-| Our TT-v3 fusion (pool=500, w=0.7)                                   | 0.1418 | 29.8% | x59    | +65%   |
-| Our v6 fusion v13_tuned (BM25@500 only)                              | 0.1519 | 31.5% | x63    | +76%   |
-| **Our v6 fusion + expansion (artist + TT@1000 + NN@100), v13 wts**   | **0.1533** | **31.7%** | **x64** | **+78%** |
+| Baseline | nDCG@1 | nDCG@10 | nDCG@20 | Catalog div. | Lexical div. |
+|---|---:|---:|---:|---:|---:|
+| Random              | 0.0000 | 0.0001 | 0.0001 | 0.9652 | 0.0000 |
+| Popularity          | 0.0005 | 0.0018 | 0.0024 | 0.0004 | 0.0000 |
+| LLaMA-1B + BM25     | 0.0098 | 0.0627 | 0.0815 | 0.3795 | 0.2558 |
+
+LLaMA-1B + BM25 is the organizer's reference retrieval baseline.
+
+## Current system vs baselines (official metrics)
+
+| System | nDCG@1 | nDCG@10 | nDCG@20 | Catalog div. | Lexical div. | Hit@20 |
+|---|---:|---:|---:|---:|---:|---:|
+| Random                                                               | 0.0000 | 0.0001 | 0.0001 | 0.9652 | 0.0000 | 0.1% |
+| Popularity                                                           | 0.0005 | 0.0018 | 0.0024 | 0.0004 | 0.0000 | 0.6% |
+| LLaMA-1B + BM25 (organizer)                                          | 0.0098 | 0.0627 | 0.0815 | 0.3795 | 0.2558 | — |
+| Our BM25 floor (name+artist+album)                                   | —      | —      | 0.0861 | —      | —      | 21.9% |
+| Our BM25 + tag_list + seen exclusion                                 | —      | —      | 0.1313 | —      | —      | 27.4% |
+| Our TT-v3 fusion (pool=500, w=0.7)                                   | —      | —      | 0.1418 | —      | —      | 29.8% |
+| Our v6 fusion v13_tuned (BM25@500 only)                              | —      | —      | 0.1519 | —      | —      | 31.5% |
+| **Our v6 fusion + expansion (artist + TT@1000 + NN@100), v13 wts**   | **0.0551** | **0.1328** | **0.1533** | **0.5119** | **0.1844** | **31.7%** |
+
+Notes:
+- Our current best (0.1533 nDCG@20) is **+0.0718 over the strongest organizer
+  baseline** (LLaMA-1B + BM25, 0.0815) — roughly 88% relative improvement.
+- Catalog diversity 0.512 (we recommend ~51% of the 47,071-track catalog overall)
+  vs LLaMA-1B + BM25 at 0.380. Higher coverage is better here.
+- Lexical diversity 0.184 vs LLaMA-1B + BM25 at 0.256. Our template responses
+  are less varied; addressing this is a response-generation problem, not
+  retrieval, and is out of scope for the current phase.
 
 ## Previous bests
 
