@@ -21,11 +21,22 @@ Usage:
         --w_tt 0.32 --w_cf 0.10 --w_qwen_meta 0.40 --w_qwen_lyrics 0.08 \
         --w_clap 0.05 --w_bm25 0.24 --bm25_norm
 """
+import os
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
 import argparse
 import json
 import re
 import numpy as np
 from pathlib import Path
+
+# Import lightgbm BEFORE torch -- on macOS, importing it after torch causes a
+# silent OpenMP-related abort when other heavy native libs (e.g. CLAP via torch
+# / transformers) are loaded.
+try:
+    import lightgbm as _lgb_preload  # noqa: F401
+except ImportError:
+    _lgb_preload = None
 
 import bm25s
 import torch
@@ -87,6 +98,8 @@ parser.add_argument("--write_provenance", default="",
                     help="If set, write per-turn provenance JSONL to this path.")
 parser.add_argument("--write_features", default="",
                     help="If set, write per-candidate feature rows to this NPZ path for LTR training.")
+parser.add_argument("--ltr_model", default="",
+                    help="If set, score with this LightGBM booster instead of the linear fusion.")
 args = parser.parse_args()
 
 BM25_CACHE = "cache/bm25/track_metadata"
@@ -239,6 +252,22 @@ print(
     f"clap={args.w_clap} bm25={args.w_bm25} ah={args.w_attrs_hist}"
 )
 
+FEATURE_COLS = [
+    "tt_cos", "qm_cos", "ql_cos", "clap_cos", "cf_cos",
+    "bm25_signal", "tt_rank_sig", "artist_sig", "nn_sig",
+    "bm25_origin", "artist_origin", "tt_origin", "nn_origin",
+    "cold_user", "pool_size",
+]
+
+ltr_booster = None
+if args.ltr_model:
+    if _lgb_preload is None:
+        raise RuntimeError("--ltr_model requires `lightgbm` to be installed.")
+    ltr_booster = _lgb_preload.Booster(model_file=args.ltr_model)
+    print(f"Loaded LTR booster: {args.ltr_model}  ({ltr_booster.num_feature()} features)")
+    assert ltr_booster.num_feature() == len(FEATURE_COLS), \
+        f"booster expects {ltr_booster.num_feature()} features, FEATURE_COLS has {len(FEATURE_COLS)}"
+
 inference_results = []
 
 prov_fh = None
@@ -247,13 +276,7 @@ if args.write_provenance:
     prov_fh = open(args.write_provenance, "w")
     print(f"Writing provenance to {args.write_provenance}")
 
-# LTR feature dump buffers (concatenated at end). Schema documented in header.
-FEATURE_COLS = [
-    "tt_cos", "qm_cos", "ql_cos", "clap_cos", "cf_cos",
-    "bm25_signal", "tt_rank_sig", "artist_sig", "nn_sig",
-    "bm25_origin", "artist_origin", "tt_origin", "nn_origin",
-    "cold_user", "pool_size",
-]
+# LTR feature dump buffers (concatenated at end). FEATURE_COLS defined above.
 feat_chunks: list = []
 label_chunks: list = []
 group_chunks: list = []   # turn-index per row
@@ -467,8 +490,9 @@ for item in tqdm(sessions, desc="Sessions"):
                 args.w_bm25_origin * bm25_origin_sig
             )
 
-        # --- LTR feature capture (optional) ---
-        if args.write_features:
+        # --- LTR feature matrix (built when dumping or when scoring with a booster) ---
+        feat = None
+        if args.write_features or ltr_booster is not None:
             gold_tid = turn["content"]
             cold_user_flag = 1.0 if cf_all is None else 0.0
             n_cands_local = len(cands)
@@ -507,12 +531,16 @@ for item in tqdm(sessions, desc="Sessions"):
                 )
                 if tid == gold_tid:
                     lbl[i] = 1
-            feat_chunks.append(feat)
-            label_chunks.append(lbl)
-            group_chunks.append(np.full(n_cands_local, turn_counter[0], dtype=np.int32))
-            turn_meta.append({"session_id": session_id, "turn_number": turn_number,
-                              "gold": gold_tid, "n_cands": n_cands_local})
-            turn_counter[0] += 1
+            if args.write_features:
+                feat_chunks.append(feat)
+                label_chunks.append(lbl)
+                group_chunks.append(np.full(n_cands_local, turn_counter[0], dtype=np.int32))
+                turn_meta.append({"session_id": session_id, "turn_number": turn_number,
+                                  "gold": gold_tid, "n_cands": n_cands_local})
+                turn_counter[0] += 1
+
+        if ltr_booster is not None and feat is not None:
+            total_arr = ltr_booster.predict(feat).astype(np.float32)
 
         top_idx = np.argsort(total_arr)[::-1][:args.topk]
         predicted_track_ids = [cands[i] for i in top_idx]

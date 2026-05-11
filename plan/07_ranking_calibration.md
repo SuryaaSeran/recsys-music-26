@@ -177,6 +177,58 @@ Next: continue Step 6 -- sweep `w_tt_rank, w_artist, w_nn, w_bm25_origin,
 bm25_missing_floor` on top of this 0.1533 baseline. Bucket-level reporting
 (BM25-hit / artist-rescue / TT-rescue / NN-rescue top-20 rates) is still TBD.
 
+## LTR pivot (2026-05-11)
+
+Replaced the linear grid sweep with a LightGBM LambdaMART ranker on 15
+features (6 cosines + 4 rank/origin features + 4 source flags + cold_user +
+pool_size). Implementation:
+
+- `--write_features <path.npz>` on the inference script dumps per-candidate
+  features per turn (15 dims) + binary gold labels + group ids.
+- `scripts/train/train_ltr_lightgbm.py` does session-stratified 5-fold
+  LambdaMART training with ndcg@20 metric and early stopping.
+- `--ltr_model <booster.txt>` on the inference script swaps the linear sum
+  for `booster.predict(features)` per turn.
+
+### v1 result (dev-only training, CV)
+
+Feature dump on full dev, train booster with 5-fold CV by session:
+
+```
+Fold ndcg@20: 0.3553  0.3337  0.3551  0.3572  0.3905
+CV mean:     0.3584   (std 0.0182)
+Top features by gain:
+  tt_cos          113017
+  tt_rank_sig      71834
+  artist_sig       56736
+  bm25_signal      44635
+  nn_sig           11018
+  qm_cos           10204
+  cf_cos            9568
+```
+
+**Important caveat:** v1 is trained on the dev set. The CV folds give a clean
+held-out signal (0.358), but a re-fit-on-all-dev model is then overfit when
+applied back to dev. Need to retrain on the TRAIN split before claiming a
+real dev number for the leaderboard.
+
+### Engineering notes
+
+- On macOS, importing lightgbm AFTER torch/transformers causes a silent OMP
+  abort. Workaround: import lightgbm at top of inference script with
+  `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1` env vars at runtime. See commit
+  `c745005` plus follow-ups.
+- LightGBM was installed via pip; libomp had to be `brew install libomp`'d
+  for the `.dylib` rpath to resolve.
+
+### Next: retrain on TRAIN split
+
+1. Run `run_inference_fusion_recall_expansion.py --split train --write_features
+   exp/analysis/ltr_train_features.npz` (note: needs a `--split` flag added).
+2. Train booster on train features.
+3. Eval on dev features through the inference pipeline.
+4. If dev nDCG@20 > 0.1533: update CURRENT_BEST_ITERATION.md; port to blind.
+
 ## Smoke Test (20 sessions, 160 turns)
 
 Run: `--tt_pool 1000 --artist_expansion --last_nn_k 100 --last_nn_src 2
