@@ -101,6 +101,49 @@ BM25-miss rescue breakdown (3277 BM25 misses):
    `BM25@500 + artist + TT@1000` size at equal recall, integrate it into
    `run_inference_fusion_recall_expansion.py` behind flags and rerun dev nDCG.
 
+## Sweep Results (run 1: 8000 turns, TT-v6)
+
+Output: `exp/analysis/recall_min_pool_grid.txt` (gitignored). Selected Pareto rows:
+
+| BM25 | Art | TT@K | NN/track | Pool | Recall | mood | hist | spec |
+|---:|:---:|---:|---:|---:|---:|---:|---:|---:|
+| 300 | . |    0 |   0 |  300 | 0.543 | 0.498 | 0.609 | 0.596 |
+| 300 | . |    0 | 100 |  392 | 0.608 | 0.570 | 0.669 | 0.656 |
+| 300 | Y |    0 |   0 |  431 | 0.612 | 0.573 | 0.671 | 0.665 |
+| 300 | . |  250 | 100 |  547 | 0.678 | 0.643 | 0.724 | 0.719 |
+| 300 | Y |  250 | 100 |  668 | 0.706 | 0.671 | 0.750 | 0.749 |
+| 300 | . |  500 | 100 |  757 | 0.722 | 0.692 | 0.763 | 0.762 |
+| 300 | Y |  500 | 100 |  876 | 0.745 | 0.714 | 0.785 | 0.786 |
+| 500 | Y |  500 | 100 | 1041 | 0.760 | 0.732 | 0.796 | 0.799 |
+| 300 | . | 1000 | 100 | 1207 | 0.780 | 0.750 | 0.813 | 0.812 |
+| 300 | Y | 1000 | 100 | 1323 | 0.798 | 0.767 | 0.829 | 0.832 |
+| 500 | Y | 1000 |   0 | 1434 | 0.804 | 0.774 | 0.836 | 0.839 |
+| 500 | Y | 1000 | 100 | 1468 | 0.808 | 0.779 | 0.838 | 0.841 |
+| 750 | Y | 1000 | 100 | 1663 | 0.819 | 0.790 | 0.847 | 0.845 |
+
+Findings:
+- Last-track NN@100 (in TT space) lifts recall +1.5-2.0% across the board for ~+50
+  pool slots. Best per-slot of any signal tested.
+- TT@500 → TT@1000 buys +4-5% but doubles dense-pool cost; only worth it if the
+  rescore can handle ~1500 candidates.
+- BM25@300 vs @500: dropping from 500 → 300 BM25 costs only ~0.5-1% recall while
+  saving 200 slots. With dense + artist + NN, BM25@300 is the better budget choice.
+- Artist expansion holds its ~+2-4% lift universally.
+- Best ≥80% config: BM25@500 + artist + TT@1000 + NN@100 → pool 1468, recall 0.808.
+- Best ≥75% small-pool: BM25@300 + artist + TT@500 + NN@100 → pool 876, recall 0.745
+  (close to 0.755 of the old @1041 config; -16% pool size).
+- Best ≥70% small-pool: BM25@300 + artist + TT@250 + NN@100 → pool 668, recall 0.706.
+
+Targets vs result:
+- ≥80% @ ≤ 800: NOT MET (best @800-class is 0.722 at pool 757).
+- ≥85% @ ≤1500: NOT MET (best @1500-class is 0.808).
+
+Conclusion: the cheap additions (NN, smaller BM25, artist) compress the existing
+recall-vs-size curve by ~150-250 slots at equal recall, but don't break through
+the 80.6% ceiling that v6 dense + BM25 + artist hit before. To go past 80% with
+the current budget we need a *new* signal (CF for warm users, multi-query TT,
+or v7 retrain), not more of the same.
+
 ## Validation
 
 - Per-config table: `total_pool_size, recall@pool, bucket_recall` for the six
