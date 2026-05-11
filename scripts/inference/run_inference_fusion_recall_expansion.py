@@ -109,13 +109,18 @@ metadata_dict = {row["track_id"]: row for row in all_tracks}
 # Artist -> tracks dictionary (lowercased, capped, deterministic order)
 artist_to_tids: dict[str, list[str]] = {}
 if args.artist_expansion:
+    # Sort each artist's catalog by popularity desc so rank 0 = most popular track.
+    # Falls back to 0.0 if popularity is missing.
+    artist_buckets: dict[str, list[tuple[float, str]]] = {}
     for _tid, _row in metadata_dict.items():
+        _pop = float(_row.get("popularity") or 0.0)
         for _a in (_row.get("artist_name") or []):
             _k = _a.strip().lower()
             if _k:
-                artist_to_tids.setdefault(_k, []).append(_tid)
-    for _k in artist_to_tids:
-        artist_to_tids[_k] = artist_to_tids[_k][:args.artist_cap]
+                artist_buckets.setdefault(_k, []).append((_pop, _tid))
+    for _k, _bucket in artist_buckets.items():
+        _bucket.sort(key=lambda x: -x[0])
+        artist_to_tids[_k] = [t for _, t in _bucket[:args.artist_cap]]
 known_artists = sorted(artist_to_tids.keys(), key=len, reverse=True)
 print(f"Artist dict: {len(known_artists):,} artists (expansion={'on' if args.artist_expansion else 'off'})")
 
