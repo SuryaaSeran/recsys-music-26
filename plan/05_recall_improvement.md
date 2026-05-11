@@ -93,3 +93,11 @@ by artist expansion cannot score into the top-20 against BM25 rank-1 competitors
 **Next step:** cross-encoder reranker that ignores BM25 rank entirely and scores on
 (query, track text) interaction. CE is the right tool -- it was abandoned after v1
 overfit. Retrain CE on v6 data (richer track text) or use CE to rerank artist-expanded pool.
+
+---
+
+## Follow-up: minimum-pool recall
+
+Pool size now matters as much as recall. Continues in
+[plan/06_min_pool_recall.md](06_min_pool_recall.md). Target: ≥80% recall at total
+pool ≤ 800 (vs ~1500 today).

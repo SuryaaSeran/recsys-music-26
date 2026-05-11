@@ -100,6 +100,15 @@ Eval loss improved through all of epoch 2 (0.3027 → 0.2480). Best = `models/tw
 
 ---
 
+### Phase 7: Min-pool recall (active)
+**Status: Active** — details in [plan/06_min_pool_recall.md](06_min_pool_recall.md)
+
+Goal: maximize gold-in-pool recall at the smallest pool size.
+Today: 80.6% @ size ~1500. Target: ≥80% @ size ≤ 800, ≥85% @ size ≤ 1500.
+Current best retrieval+rescore snapshot: [plan/CURRENT_BEST_ITERATION.md](CURRENT_BEST_ITERATION.md).
+
+---
+
 ### Phase 6: Semantic ID (LLM-as-retriever)
 **Status: Abandoned** — archived in [plan/archive/SEMANTIC_ID_PLAN.md](archive/SEMANTIC_ID_PLAN.md)
 
