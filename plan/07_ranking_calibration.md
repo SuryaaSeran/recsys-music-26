@@ -31,28 +31,52 @@ Each candidate carries the origin sources (BM25, artist, TT, NN) and per-source 
 New ranking features on top of existing fusion:
 
 ```
-score =   w_bm25       * bm25_norm                       # 0 if not in BM25 pool, replaced by floor
-        + w_tt         * tt_cosine
-        + w_qwen_meta  * qm_cosine
-        + w_qwen_lyr   * ql_cosine
-        + w_clap       * clap_cosine
-        + w_cf         * cf_cosine
-        + w_tt_rank    * 1 / log2(tt_rank + 2)           # NEW: rank-based TT prior
-        + w_artist     * artist_hit                      # NEW: artist-expansion flag
-        + w_nn         * nn_hit                          # NEW: history-NN flag
-        + bm25_missing_floor                             # NEW: replaces 0.0 for non-BM25 cands
+bm25_signal = bm25_norm if in_bm25_pool else bm25_missing_floor    # stays inside w_bm25
+artist_sig  = 1/log2(artist_rank + 2) if matched else 0            # rank within artist catalog
+nn_sig      = 1/log2(min_nn_rank + 2) if NN-hit else 0             # min rank across source tracks
+tt_rank_sig = 1/log2(tt_rank + 2)     if in_tt_pool else 0
+bm25_origin = 1 if "bm25" in sources else 0                        # preservation feature
+
+score =   w_bm25         * bm25_signal
+        + w_tt           * tt_cosine
+        + w_qwen_meta    * qm_cosine
+        + w_qwen_lyr     * ql_cosine
+        + w_clap         * clap_cosine
+        + w_cf           * cf_cosine
+        + w_tt_rank      * tt_rank_sig
+        + w_artist       * artist_sig
+        + w_nn           * nn_sig
+        + w_bm25_origin  * bm25_origin
 ```
 
-Sweep (Step 3):
+- `bm25_missing_floor` is **inside** w_bm25 (replaces the BM25 signal value for non-BM25
+  candidates); it is not a raw additive constant.
+- `artist_rank` is the position of the track within the matched artist's catalog
+  (proxy: order in the metadata-derived list, capped at `--artist_cap`).
+- `nn_rank` is the smallest rank across any of the last-N source tracks for which this
+  candidate is a TT-space neighbor.
+
+Sweep (Step 3, narrowed):
 
 ```
-bm25_missing_floor : 0.00, 0.05, 0.10, 0.15
+bm25_missing_floor : 0.00, 0.03, 0.05, 0.08, 0.10
 w_tt_rank          : 0.00, 0.03, 0.05, 0.08
-w_artist           : 0.00, 0.03, 0.05, 0.08
-w_nn               : 0.00, 0.03, 0.05
+w_artist           : 0.00, 0.02, 0.05
+w_nn               : 0.00, 0.02, 0.05
+w_bm25_origin      : 0.00, 0.02, 0.05
 ```
 
 Holding the v13_tuned base weights constant initially; co-tune in pass 2.
+
+### Baselines (must match before sweeping)
+
+- **A**: expanded pool, old scorer (current `run_inference_fusion_recall_expansion.py`
+  at HEAD before this work).
+- **B**: expanded pool, new code path, `w_tt_rank=w_artist=w_nn=w_bm25_origin=0`,
+  `bm25_missing_floor=0.05` (same as A).
+
+If A ≠ B (within 0.0005 nDCG), the source-tracking refactor changed scoring
+unintentionally; halt and diff.
 
 ## Provenance (for the failure table)
 
@@ -90,6 +114,13 @@ To modify:
 To create:
 - `scripts/inference/sweep_source_aware.py` — driver that runs the inference with
   combos and pipes through `evaluate_local.py`, writes a summary table.
+- Final report table per config:
+
+| Config | nDCG | Hit@20 | BM25-hit top20 | Artist-rescue top20 | TT-rescue top20 | NN-rescue top20 |
+| ------ | ---: | -----: | -------------: | ------------------: | --------------: | --------------: |
+
+  Bucket = which source(s) contained the gold; bucket metrics report top-20 rate
+  conditioned on each.
 
 ## Steps
 
