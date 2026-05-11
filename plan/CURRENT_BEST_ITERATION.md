@@ -125,6 +125,70 @@ Notes:
   are less varied; addressing this is a response-generation problem, not
   retrieval, and is out of scope for the current phase.
 
+## Response generation
+
+Two paths are used depending on the run target.
+
+### Dev (inside the inference loop)
+
+`run_inference_fusion_recall_expansion.py` emits a fixed template per turn:
+
+```python
+response = f'I recommend "{name}" by {artist} based on your request.'
+```
+
+`name` and `artist` are taken from the top-1 predicted track's metadata. This
+is intentionally cheap; the dev evaluator does not score response quality.
+Lexical diversity (Distinct-2) on this template scores ~0.18 on the official
+evaluator -- enough to confirm the path works end-to-end, but well below the
+LLaMA-1B + BM25 baseline at 0.256.
+
+### Blind (post-process step)
+
+For blind submissions, `scripts/inference/generate_responses_blind.py` rewrites
+each turn's response with an LLM. Pipeline:
+
+1. Load the prediction JSON (template responses from the dev path).
+2. Load Qwen via `mlx-lm` from `models/qwen_sid_patched` (local copy of a
+   Qwen-family instruct checkpoint).
+3. For each turn, build a chat prompt with:
+   - System: "You are a friendly music recommendation assistant. Give a brief
+     (2-3 sentence) recommendation that references the user's request and
+     explains why the top track fits."
+   - Last 4 turns of conversation history. Played-music turns are converted to
+     `assistant: I recommend "<name>" by <artist>.` so the model sees what
+     was already recommended.
+   - Current user query.
+   - A trailing user turn that lists the top-3 recommended tracks (name,
+     artist, first 5 tags) and asks for a short response about the top track.
+4. Generate with `max_tokens=120` on the patched Qwen.
+5. On empty output or generation exception, fall back to the dev template.
+
+This step replaces only `predicted_response`; `predicted_track_ids` is
+preserved exactly from the retrieval step, so nDCG is unchanged.
+
+Reproduction:
+
+```bash
+python scripts/inference/generate_responses_blind.py \
+    --pred exp/inference/blind_a/<blind_id>.json \
+    --max_tokens 120 \
+    --dataset talkpl-ai/TalkPlayData-Challenge-Blind-A
+# writes <blind_id>_qwen.json next to the input.
+```
+
+Limitations:
+
+- Devset is never scored on response quality locally, so the LLM rewrite is
+  not applied there in the standard flow. To measure lexical/personalisation
+  judge scores on the devset, the same script can be pointed at a devset
+  prediction file via `--dataset talkpl-ai/TalkPlayData-Challenge-Dataset
+  --split test` (with the dev-side `session_map`).
+- The patched checkpoint at `models/qwen_sid_patched` is not in this repo
+  (gitignored); regenerate from the base Qwen-Instruct if missing.
+- No LLM-as-Judge tuning has been done yet; raising the lexical/diversity
+  numbers is a separate workstream that does not interact with retrieval.
+
 ## Previous bests
 
 | Date | nDCG@20 | Pool | Rescore | Note |
