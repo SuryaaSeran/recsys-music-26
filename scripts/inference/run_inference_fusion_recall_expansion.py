@@ -47,6 +47,8 @@ from tqdm import tqdm
 parser = argparse.ArgumentParser()
 parser.add_argument("--tt_model",    default="models/twotower_v3/final")
 parser.add_argument("--tt_index",    default="cache/twotower_v3")
+parser.add_argument("--tt_query_prefix", default="",
+                    help="Prefix prepended to the TT query before encoding (e.g. Qwen3 'Instruct: ...\\nQuery: ').")
 parser.add_argument("--sessions",    type=int,   default=0)
 parser.add_argument("--split",       default="test", choices=["test", "train"],
                     help="Which dataset split to run on.")
@@ -87,9 +89,20 @@ parser.add_argument("--artist_expansion", action="store_true", default=False,
 parser.add_argument("--artist_cap", type=int, default=50,
                     help="Max tracks added per artist via expansion (deterministic by metadata order).")
 parser.add_argument("--last_nn_k", type=int, default=0,
-                    help="Per-track TT-NN expansion depth. 0=disabled.")
+                    help="Per-track TT-NN expansion depth (uniform across last_nn_src). 0=disabled.")
 parser.add_argument("--last_nn_src", type=int, default=2,
                     help="Use last-N played tracks as NN sources.")
+parser.add_argument("--session_nn_ks", default="",
+                    help="Comma list of per-position NN depths, newest first (overrides --last_nn_k). "
+                         "Example: '300,200,100' = top-300 NN of last track, top-200 of prev2, top-100 of prev3.")
+parser.add_argument("--session_mean_k", type=int, default=0,
+                    help="Add top-K NN of mean-session vector (TT mean of last --session_mean_n tracks).")
+parser.add_argument("--session_mean_n", type=int, default=4,
+                    help="Number of recent tracks averaged for mean-session vector.")
+parser.add_argument("--cooccur_table", default="",
+                    help="Path to co-occurrence .npz built by scripts/train/build_cooccur_table.py.")
+parser.add_argument("--cooccur_ks", default="",
+                    help="Comma list of per-position co-occur depths, newest first. Example: '300,150,50'.")
 parser.add_argument("--w_tt_rank",  type=float, default=0.0,
                     help="Weight on 1/log2(tt_rank+2) for candidates in the TT@K pool.")
 parser.add_argument("--w_artist",   type=float, default=0.0,
@@ -242,6 +255,28 @@ for uid, vec in user_cf_raw.items():
     if n > 1e-8:
         user_cf[uid] = v / n
 
+# Co-occurrence table (optional)
+cooccur_track_ids = None
+cooccur_tid2idx: dict[str, int] = {}
+cooccur_neigh_ids = None
+cooccur_neigh_w = None
+if args.cooccur_table:
+    print(f"Loading co-occurrence table: {args.cooccur_table}")
+    _z = np.load(args.cooccur_table, allow_pickle=True)
+    cooccur_track_ids = _z["track_ids"]
+    cooccur_neigh_ids = _z["neigh_ids"]
+    cooccur_neigh_w   = _z["neigh_w"]
+    cooccur_tid2idx = {str(t): i for i, t in enumerate(cooccur_track_ids.tolist())}
+    nz = (cooccur_neigh_ids[:, 0] >= 0).sum()
+    print(f"  table shape={cooccur_neigh_ids.shape}  rows-with-neighbours={nz}")
+
+# Parse comma-list flags
+def _parse_ks(s: str) -> list[int]:
+    return [int(x) for x in s.split(",") if x.strip()] if s else []
+
+session_nn_ks_list = _parse_ks(args.session_nn_ks)
+cooccur_ks_list    = _parse_ks(args.cooccur_ks)
+
 print("Loading dev sessions...")
 ds = load_dataset("talkpl-ai/TalkPlayData-Challenge-Dataset")
 sessions = list(ds[args.split])
@@ -265,6 +300,11 @@ FEATURE_COLS = [
     "bm25_signal", "tt_rank_sig", "artist_sig", "nn_sig",
     "bm25_origin", "artist_origin", "tt_origin", "nn_origin",
     "cold_user", "pool_size",
+    # Stage 9 additions
+    "qm_origin", "qm_rank_sig", "qm_only",
+    "nn_source_count", "mean_nn_origin", "mean_nn_rank_sig",
+    "dist_to_last", "dist_to_recent_mean",
+    "collab_origin", "collab_rank_sig", "collab_score", "collab_source_count",
 ]
 
 ltr_booster = None
@@ -272,9 +312,10 @@ if args.ltr_model:
     if _lgb_preload is None:
         raise RuntimeError("--ltr_model requires `lightgbm` to be installed.")
     ltr_booster = _lgb_preload.Booster(model_file=args.ltr_model)
-    print(f"Loaded LTR booster: {args.ltr_model}  ({ltr_booster.num_feature()} features)")
-    assert ltr_booster.num_feature() == len(FEATURE_COLS), \
-        f"booster expects {ltr_booster.num_feature()} features, FEATURE_COLS has {len(FEATURE_COLS)}"
+    n_booster_feats = ltr_booster.num_feature()
+    print(f"Loaded LTR booster: {args.ltr_model}  ({n_booster_feats} features, FEATURE_COLS has {len(FEATURE_COLS)})")
+    assert n_booster_feats <= len(FEATURE_COLS), \
+        f"booster expects {n_booster_feats} features but FEATURE_COLS only has {len(FEATURE_COLS)}"
 
 inference_results = []
 
@@ -290,6 +331,8 @@ label_chunks: list = []
 group_chunks: list = []   # turn-index per row
 turn_meta: list = []      # one per turn: {session_id, turn_number, gold}
 turn_counter = [0]        # mutable counter for closures
+total_music_turns = 0
+found_in_pool_count = 0
 
 for item in tqdm(sessions, desc="Sessions"):
     session_id  = item["session_id"]
@@ -354,13 +397,19 @@ for item in tqdm(sessions, desc="Sessions"):
         cands_set = set(cands)
         sources: dict[str, set] = {tid: {"bm25"} for tid in cands}
         tt_rank_map: dict[str, int] = {}
+        qm_rank_map: dict[str, int] = {}        # rank in Qwen-Meta pool
         artist_src_map: dict[str, str] = {}
         artist_rank_map: dict[str, int] = {}    # min rank within any matched artist's catalog
         nn_src_map: dict[str, str] = {}
         nn_rank_map: dict[str, int] = {}        # min rank across NN source tracks
+        nn_src_count: dict[str, int] = {}       # how many prior tracks NN'd this candidate
+        mean_nn_rank_map: dict[str, int] = {}   # rank under mean-session-vec NN
+        collab_rank_map: dict[str, int] = {}    # best (min) position across collab sources
+        collab_score_map: dict[str, float] = {} # max decayed weight
+        collab_src_count: dict[str, int] = {}   # how many source tracks contributed
 
         # --- Encode queries (needed for expansion + scoring) ---
-        tt_emb = tt_model.encode(tt_query, normalize_embeddings=True, convert_to_numpy=True)
+        tt_emb = tt_model.encode(args.tt_query_prefix + tt_query, normalize_embeddings=True, convert_to_numpy=True)
         qwen_emb = qwen_model.encode(QWEN_INSTR + semantic_query,
                                      normalize_embeddings=True, convert_to_numpy=True)
         with torch.no_grad():
@@ -391,6 +440,8 @@ for item in tqdm(sessions, desc="Sessions"):
                 sources[tid].add(src_label)
                 if src_label == "tt" and tid not in tt_rank_map:
                     tt_rank_map[tid] = rank
+                if src_label == "qm" and tid not in qm_rank_map:
+                    qm_rank_map[tid] = rank
 
         add_topk(tt_all,   tt_ids,         args.tt_pool, "tt")
         add_topk(qm_all,   qwen_meta_ids,  args.qwen_pool, "qm")
@@ -419,26 +470,110 @@ for item in tqdm(sessions, desc="Sessions"):
                     if tid not in artist_rank_map or rank < artist_rank_map[tid]:
                         artist_rank_map[tid] = rank
 
-        # Last-track NN expansion (TT space)
-        if args.last_nn_k > 0 and music_history:
-            for src_tid in music_history[-args.last_nn_src:]:
-                src_idx = tt_id2idx.get(src_tid)
+        # Per-position session NN expansion (TT space).
+        # If --session_nn_ks is given (e.g. "300,200,100"), each position uses its own K.
+        # Otherwise --last_nn_k applies uniformly to the last --last_nn_src tracks.
+        if session_nn_ks_list:
+            nn_plan = [(music_history[-(i+1)], session_nn_ks_list[i])
+                       for i in range(min(len(session_nn_ks_list), len(music_history)))
+                       if session_nn_ks_list[i] > 0]
+        elif args.last_nn_k > 0 and music_history:
+            nn_plan = [(t, args.last_nn_k) for t in music_history[-args.last_nn_src:]]
+        else:
+            nn_plan = []
+
+        for src_tid, k_nn in nn_plan:
+            src_idx = tt_id2idx.get(src_tid)
+            if src_idx is None:
+                continue
+            sims = tt_embs @ tt_embs[src_idx]
+            sims[src_idx] = -1e9
+            k_take = min(k_nn, len(sims) - 1)
+            top = np.argpartition(-sims, k_take)[:k_take]
+            top = top[np.argsort(-sims[top])]
+            for rank, idx in enumerate(top):
+                tid = tt_ids[int(idx)]
+                if tid in seen:
+                    continue
+                if tid not in cands_set:
+                    cands.append(tid); cands_set.add(tid); sources[tid] = set()
+                sources[tid].add("nn")
+                nn_src_map.setdefault(tid, src_tid)
+                if tid not in nn_rank_map or rank < nn_rank_map[tid]:
+                    nn_rank_map[tid] = rank
+                nn_src_count[tid] = nn_src_count.get(tid, 0) + 1
+
+        # Mean-session-vector NN expansion
+        mean_session_vec = None
+        if music_history:
+            hist_idxs = [tt_id2idx.get(t) for t in music_history[-args.session_mean_n:]]
+            hist_idxs = [i for i in hist_idxs if i is not None]
+            if hist_idxs:
+                v = tt_embs[hist_idxs].mean(axis=0)
+                vn = np.linalg.norm(v)
+                if vn > 1e-8:
+                    mean_session_vec = (v / vn).astype(np.float32)
+        if args.session_mean_k > 0 and mean_session_vec is not None:
+            sims = tt_embs @ mean_session_vec
+            for i in hist_idxs:
+                sims[i] = -1e9
+            k_take = min(args.session_mean_k, len(sims) - 1)
+            top = np.argpartition(-sims, k_take)[:k_take]
+            top = top[np.argsort(-sims[top])]
+            for rank, idx in enumerate(top):
+                tid = tt_ids[int(idx)]
+                if tid in seen:
+                    continue
+                if tid not in cands_set:
+                    cands.append(tid); cands_set.add(tid); sources[tid] = set()
+                sources[tid].add("mean_nn")
+                if tid not in mean_nn_rank_map or rank < mean_nn_rank_map[tid]:
+                    mean_nn_rank_map[tid] = rank
+
+        # Co-occurrence expansion (behavioural next-song table from TRAIN)
+        if cooccur_neigh_ids is not None and cooccur_ks_list and music_history:
+            for pos, k_co in enumerate(cooccur_ks_list):
+                if k_co <= 0 or pos >= len(music_history):
+                    break
+                src_tid = music_history[-(pos + 1)]
+                src_idx = cooccur_tid2idx.get(src_tid)
                 if src_idx is None:
                     continue
-                sims = tt_embs @ tt_embs[src_idx]
-                sims[src_idx] = -1e9
-                top = np.argpartition(-sims, args.last_nn_k)[:args.last_nn_k]
-                top = top[np.argsort(-sims[top])]
-                for rank, idx in enumerate(top):
-                    tid = tt_ids[int(idx)]
+                neighs = cooccur_neigh_ids[src_idx]
+                ws     = cooccur_neigh_w[src_idx]
+                taken = 0
+                for rank in range(len(neighs)):
+                    if taken >= k_co:
+                        break
+                    nidx = int(neighs[rank])
+                    if nidx < 0:
+                        break
+                    tid = str(cooccur_track_ids[nidx])
+                    w   = float(ws[rank])
                     if tid in seen:
                         continue
                     if tid not in cands_set:
                         cands.append(tid); cands_set.add(tid); sources[tid] = set()
-                    sources[tid].add("nn")
-                    nn_src_map.setdefault(tid, src_tid)
-                    if tid not in nn_rank_map or rank < nn_rank_map[tid]:
-                        nn_rank_map[tid] = rank
+                    sources[tid].add("collab")
+                    if tid not in collab_rank_map or rank < collab_rank_map[tid]:
+                        collab_rank_map[tid] = rank
+                    if w > collab_score_map.get(tid, 0.0):
+                        collab_score_map[tid] = w
+                    collab_src_count[tid] = collab_src_count.get(tid, 0) + 1
+                    taken += 1
+
+        # Pool recall tracking
+        gold_track = turn["content"]
+        total_music_turns += 1
+        found_in_pool_count += int(gold_track in cands_set)
+
+        # Distance arrays (for new ranking features)
+        dist_to_last_arr = None
+        if music_history:
+            last_idx = tt_id2idx.get(music_history[-1])
+            if last_idx is not None:
+                dist_to_last_arr = tt_embs @ tt_embs[last_idx]
+        dist_to_mean_arr = (tt_embs @ mean_session_vec) if mean_session_vec is not None else None
 
         if not cands:
             inference_results.append({
@@ -520,6 +655,17 @@ for item in tqdm(sessions, desc="Sessions"):
                 nn_rank = nn_rank_map.get(tid)
                 nn_sig_f  = (1.0 / np.log2(nn_rank + 2.0)) if nn_rank is not None else 0.0
                 srcs = sources.get(tid, ())
+                qm_rank = qm_rank_map.get(tid)
+                qm_rank_sig_f = (1.0 / np.log2(qm_rank + 2.0)) if qm_rank is not None else 0.0
+                qm_only_f = 1.0 if ("qm" in srcs and "bm25" not in srcs and "tt" not in srcs) else 0.0
+                nn_src_cnt_f = float(nn_src_count.get(tid, 0))
+                mean_nn_rank = mean_nn_rank_map.get(tid)
+                mean_nn_rank_sig_f = (1.0 / np.log2(mean_nn_rank + 2.0)) if mean_nn_rank is not None else 0.0
+                idx_tt_for_dist = idx_tt
+                dist_last_f = float(dist_to_last_arr[idx_tt_for_dist]) if (dist_to_last_arr is not None and idx_tt_for_dist is not None) else 0.0
+                dist_mean_f = float(dist_to_mean_arr[idx_tt_for_dist]) if (dist_to_mean_arr is not None and idx_tt_for_dist is not None) else 0.0
+                collab_rank = collab_rank_map.get(tid)
+                collab_rank_sig_f = (1.0 / np.log2(collab_rank + 2.0)) if collab_rank is not None else 0.0
                 feat[i] = (
                     float(tt_all[idx_tt])   if idx_tt is not None else 0.0,
                     float(qm_all[idx_qm])   if idx_qm is not None else 0.0,
@@ -536,6 +682,18 @@ for item in tqdm(sessions, desc="Sessions"):
                     1.0 if "nn"     in srcs else 0.0,
                     cold_user_flag,
                     float(n_cands_local),
+                    1.0 if "qm" in srcs else 0.0,
+                    qm_rank_sig_f,
+                    qm_only_f,
+                    nn_src_cnt_f,
+                    1.0 if "mean_nn" in srcs else 0.0,
+                    mean_nn_rank_sig_f,
+                    dist_last_f,
+                    dist_mean_f,
+                    1.0 if "collab" in srcs else 0.0,
+                    collab_rank_sig_f,
+                    float(collab_score_map.get(tid, 0.0)),
+                    float(collab_src_count.get(tid, 0)),
                 )
                 if tid == gold_tid:
                     lbl[i] = 1
@@ -548,7 +706,7 @@ for item in tqdm(sessions, desc="Sessions"):
                 turn_counter[0] += 1
 
         if ltr_booster is not None and feat is not None:
-            total_arr = ltr_booster.predict(feat).astype(np.float32)
+            total_arr = ltr_booster.predict(feat[:, :n_booster_feats]).astype(np.float32)
 
         top_idx = np.argsort(total_arr)[::-1][:args.topk]
         predicted_track_ids = [cands[i] for i in top_idx]
@@ -589,6 +747,12 @@ for item in tqdm(sessions, desc="Sessions"):
                 "pool_size": len(cands),
                 "bm25_rank": bm25_rank,
                 "tt_rank": tt_rank_gold,
+                "qm_rank": qm_rank_map.get(gold),
+                "nn_src_count": nn_src_count.get(gold, 0),
+                "mean_nn_rank": mean_nn_rank_map.get(gold),
+                "collab_rank": collab_rank_map.get(gold),
+                "collab_score": collab_score_map.get(gold),
+                "collab_src_count": collab_src_count.get(gold, 0),
                 "artist_match_source": artist_src_map.get(gold),
                 "nn_source_track": nn_src_map.get(gold),
                 "final_rank": final_rank_gold,
@@ -603,6 +767,7 @@ out_path = Path(args.out_dir) / f"{args.tid}.json"
 with open(out_path, "w") as f:
     json.dump(inference_results, f, ensure_ascii=False, indent=2)
 print(f"Saved {len(inference_results):,} predictions to {out_path}")
+print(f"Pool recall: {found_in_pool_count}/{total_music_turns} = {found_in_pool_count/max(total_music_turns,1):.4f}")
 if prov_fh is not None:
     prov_fh.close()
 

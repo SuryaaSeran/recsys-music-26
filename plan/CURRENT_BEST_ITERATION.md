@@ -2,21 +2,22 @@
 
 Live snapshot. Update only when full 1000-session dev nDCG@20 strictly beats this.
 
-## Best (as of 2026-05-11, LTR v2)
+## Best (as of 2026-05-24, Phase A LTR retrained)
 
-- **Dev nDCG@20: 0.1601**
-- **Hit@20: 34.0%** (2719 / 8000 turns)
-- nDCG@1 0.0525  |  nDCG@10 0.1373  |  catalog_div 0.568  |  lex_div 0.203
-- Script: `scripts/inference/run_inference_fusion_recall_expansion.py --ltr_model models/ltr/ltr_v2_train.txt`
-- Run id: `ltr_v2_dev_eval` (`exp/inference/devset/ltr_v2_dev_eval.json`)
-- Booster: `models/ltr/ltr_v2_train.txt` (LightGBM LambdaMART, 44 trees, 15
-  features) trained on 2000 random TRAIN-split sessions
-  (`--shuffle_seed 42`, ~17.7M candidate rows). 5-fold CV ndcg@20 on train =
-  0.4063 (std 0.0094). No dev-set leakage.
-- One-line reason it beat prior best: a tree ranker on the same 15 features
-  picks up source-aware interactions (BM25-origin × bm25_signal,
-  cold_user × cf_cos, multi-source × cosine combos) that the linear fusion
-  cannot express.
+- **Dev nDCG@20: 0.1646**
+- **Hit@20: (not counted)**
+- nDCG@1 0.0569  |  nDCG@10 0.1423  |  catalog_div 0.5631  |  lex_div 0.2168
+- Script: `scripts/inference/run_inference_fusion_recall_expansion.py` with Phase A expansion flags
+- Run id: `phase_a_ltr_retrained` (`exp/inference/devset/phase_a_ltr_retrained.json`)
+- Booster: `models/ltr/ltr_phase_a_nl31_lr0p08.txt` (LightGBM LambdaMART, 73
+  trees, 27 features, num_leaves=31, lr=0.08) trained on 2000 random
+  TRAIN-split sessions (`--shuffle_seed 42`). 5-fold CV ndcg@20 on train =
+  0.3987 (std 0.0052). No dev-set leakage. Co-occurrence table uses
+  `next_song_leakfree.npz` (excludes the same 2000 LTR training sessions).
+- One-line reason it beat prior best: Phase A expansion (qwen_pool=500, cf_pool=200,
+  session_mean_k=100, cooccur_ks=300/150/50) pushed pool recall from 80.8% to 83.0%,
+  and retraining the LTR on the expanded pool's 27-feature vectors gave the booster
+  source-awareness for the new candidate types.
 
 ### Retrieval pool
 
@@ -25,67 +26,32 @@ BM25@500
 + artist expansion (popularity-sorted catalog, --artist_cap 50)
 + TT-v6@1000
 + last-track-NN@100 in TT space (last_nn_src=2)
++ Qwen-meta global top-500
++ CF global top-200 (warm users only)
++ session-mean-vector NN top-100
++ co-occurrence top-300/150/50 (last 3 played tracks, leakfree table)
 ```
 
-Mean deduped pool size: ~1450.
-
-Reach metrics (8000 turns, audit):
-
-| Source | Cumulative pool recall |
-|---|---|
-| BM25@500                                | 0.590 |
-| + artist expansion                      | 0.651 |
-| + TT-v6@1000                            | 0.806 |
-| + last-track-NN@100                     | 0.808 |
+Mean deduped pool size: ~2550 (vs ~1450 before Phase A).
+Pool recall: 0.8303 (vs 0.808 before).
 
 ### Rescore (LTR booster, replaces linear sum)
 
-For each candidate the inference script builds the 15-feature vector
-documented in `FEATURE_COLS` (in `run_inference_fusion_recall_expansion.py`).
-The booster outputs a single relevance score per candidate; top-20 by that
-score is the prediction.
-
-Top feature gains (training data):
+27-feature LambdaMART booster. Top feature gains (training data):
 ```
-tt_cos          ████████████████████
-tt_rank_sig     ████████████
-artist_sig      ██████████
-bm25_signal     ████████
-nn_sig          ██
-qm_cos, cf_cos, pool_size, artist_origin, ql_cos  (small)
-```
-
-Linear baseline kept as a fallback path in the same script if `--ltr_model`
-is not passed:
-
-```
-score = w_tt          * tt_cosine
-      + w_qwen_meta   * qm_cosine
-      + w_qwen_lyrics * ql_cosine
-      + w_clap        * clap_cosine
-      + w_cf          * cf_cosine                 # warm users only
-      + w_bm25        * bm25_signal               # = bm25_norm if in BM25 pool else floor
-      + w_tt_rank     * tt_rank_sig               # 0 in this iter
-      + w_artist      * artist_sig                # 0 in this iter
-      + w_nn          * nn_sig                    # 0 in this iter
-      + w_bm25_origin * bm25_origin               # 0 in this iter
+tt_rank_sig          323159
+tt_cos               184164
+cf_cos                91930
+nn_sig                53752
+bm25_signal           36987
+dist_to_recent_mean   35394
+artist_sig            29710
+dist_to_last          18397
+collab_rank_sig       13942
+mean_nn_rank_sig       8991
 ```
 
-Weights (v13_tuned + new features at 0):
-
-```
-w_tt          = 0.32
-w_qwen_meta   = 0.40
-w_qwen_lyrics = 0.08
-w_clap        = 0.05
-w_cf          = 0.10
-w_bm25        = 0.24
-bm25_norm     = True
-bm25_missing_floor = 0.05
-w_tt_rank = w_artist = w_nn = w_bm25_origin = 0
-```
-
-Reproduction (LTR best):
+Reproduction (current best):
 
 ```bash
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
@@ -94,33 +60,37 @@ python scripts/inference/run_inference_fusion_recall_expansion.py \
   --tt_model models/twotower_v6/final --tt_index cache/twotower_v6 \
   --tt_pool 1000 --artist_expansion --last_nn_k 100 --last_nn_src 2 \
   --bm25_missing_floor 0.05 \
-  --ltr_model models/ltr/ltr_v2_train.txt
+  --qwen_pool 500 --cf_pool 200 --session_mean_k 100 \
+  --cooccur_table cache/cooccur/next_song_leakfree.npz --cooccur_ks 300,150,50 \
+  --ltr_model models/ltr/ltr_phase_a_nl31_lr0p08.txt
 ```
 
 Booster retraining:
 
 ```bash
-# 1) feature dump from a sample of TRAIN sessions
+# 1) feature dump from TRAIN sessions
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
 python scripts/inference/run_inference_fusion_recall_expansion.py \
-  --tid v07_train_features --split train --sessions 2000 --shuffle_seed 42 \
+  --tid phase_a_train_features --split train --sessions 2000 --shuffle_seed 42 \
   --tt_model models/twotower_v6/final --tt_index cache/twotower_v6 \
   --tt_pool 1000 --artist_expansion --last_nn_k 100 --last_nn_src 2 \
   --bm25_missing_floor 0.05 \
-  --write_features exp/analysis/ltr_train_features.npz
+  --qwen_pool 500 --cf_pool 200 --session_mean_k 100 \
+  --cooccur_table cache/cooccur/next_song_leakfree.npz --cooccur_ks 300,150,50 \
+  --write_features exp/analysis/ltr_phase_a_train_features.npz
 
 # 2) train LightGBM LambdaMART
 python scripts/train/train_ltr_lightgbm.py \
-  --features exp/analysis/ltr_train_features.npz \
-  --out models/ltr/ltr_v2_train.txt \
-  --n_folds 5 --num_leaves 63 --lr 0.05 --num_iter 1000 --early_stop 50
+  --features exp/analysis/ltr_phase_a_train_features.npz \
+  --out models/ltr/ltr_phase_a_nl31_lr0p08.txt \
+  --n_folds 5 --num_leaves 31 --lr 0.08 --num_iter 1000 --early_stop 50
 ```
 
 ### Tested on Blind A
 
-Not yet re-run with this config. Next blind submission should regenerate using
-the same flags above against `talkpl-ai/TalkPlayData-Challenge-Blind-A` via
-`run_inference_blind_fusion.py` (needs --last_nn_k and --artist_expansion ported).
+Not yet re-run with this config. Blind script needs Phase A expansion flags ported
+(currently only has `--last_nn_k` and `--artist_expansion`; needs `--qwen_pool`,
+`--cf_pool`, `--session_mean_k`, `--cooccur_table`, `--cooccur_ks`).
 
 ## Evaluation standard
 
@@ -157,7 +127,8 @@ LLaMA-1B + BM25 is the organizer's reference retrieval baseline.
 | Our TT-v3 fusion (pool=500, w=0.7)                                   | —      | —      | 0.1418 | —      | —      | 29.8% |
 | Our v6 fusion v13_tuned (BM25@500 only)                              | —      | —      | 0.1519 | —      | —      | 31.5% |
 | Our v6 fusion + expansion (artist + TT@1000 + NN@100), v13 wts       | 0.0551 | 0.1328 | 0.1533 | 0.5119 | 0.1844 | 31.7% |
-| **Our v6 fusion + expansion + LTR LambdaMART (train-only)**          | **0.0525** | **0.1373** | **0.1601** | **0.5677** | **0.2026** | **34.0%** |
+| Our v6 fusion + expansion + LTR LambdaMART v2 (nl63 lr0.05)          | 0.0525 | 0.1373 | 0.1601 | 0.5677 | 0.2026 | 34.0% |
+| **Our v6 fusion + expansion + LTR LambdaMART v3 (nl31 lr0.08)**      | **0.0534** | **0.1377** | **0.1609** | **0.5645** | **0.2030** | **—** |
 
 Notes:
 - Our current best (0.1533 nDCG@20) is **+0.0718 over the strongest organizer
@@ -236,6 +207,8 @@ Limitations:
 
 | Date | nDCG@20 | Pool | Rescore | Note |
 |---|---|---|---|---|
+| 2026-05-24 | 0.1609 | BM25@500 + artist + TT@1000 + NN@100 | LTR v3 (nl31 lr0.08, 73 trees, 15 feat) | `models/ltr/sweep/ltr_nl31_lr0p08.txt`. |
+| 2026-05-15 | 0.1601 | BM25@500 + artist + TT@1000 + NN@100 | LTR v2 (nl63 lr0.05, 44 trees) | LambdaMART on TRAIN features; `models/ltr/ltr_v2_train.txt`. |
 | 2026-05-11 | 0.1533 | BM25@500 + artist + TT@1000 + NN@100 | v13_tuned linear | Pool expansion (NN@100) over BM25-only pool, same weights. |
 | 2026-05-05 | 0.1519 | BM25@500 only | v13_tuned weights | Prior best. Blind file: `blind_a_fusion_v13_tuned_qwen.json`. |
 | 2026-05-04 | 0.1518 | BM25@500 + artist + TT-v6@1000 | v13_tuned + floor=0.05 | Expansion pool without NN; same weights. |
