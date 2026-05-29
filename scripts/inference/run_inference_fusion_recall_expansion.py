@@ -161,6 +161,23 @@ meta_ds = load_dataset("talkpl-ai/TalkPlayData-Challenge-Track-Metadata")
 all_tracks = concatenate_datasets([meta_ds["all_tracks"], meta_ds["test_tracks"]])
 metadata_dict = {row["track_id"]: row for row in all_tracks}
 
+# Precompute popularity percentile lookup (rank-percentile, 0-1)
+_pop_vals = []
+for _tid, _row in metadata_dict.items():
+    _p = float(_row.get("popularity") or 0.0)
+    _pop_vals.append((_p, _tid))
+_pop_vals.sort(key=lambda x: x[0])
+popularity_pctile: dict[str, float] = {}
+_n_tracks = len(_pop_vals)
+for _rank, (_p, _tid) in enumerate(_pop_vals):
+    popularity_pctile[_tid] = _rank / max(_n_tracks - 1, 1)
+del _pop_vals
+print(f"Popularity percentile lookup: {len(popularity_pctile):,} tracks")
+
+# Goal category integer encoding (deterministic)
+GOAL_CATEGORY_MAP: dict[str, int] = {}
+_goal_cat_counter = [1]  # mutable; 0 reserved for unknown/missing
+
 # Artist -> tracks dictionary (lowercased, capped, deterministic order)
 artist_to_tids: dict[str, list[str]] = {}
 if args.artist_expansion:
@@ -341,6 +358,17 @@ FEATURE_COLS = [
     "collab_origin", "collab_rank_sig", "collab_score", "collab_source_count",
     # Phase B additions
     "popularity", "track_year",
+    # Phase D: feature engineering v2
+    "n_sources",            # count of retrieval sources that found this candidate
+    "turn_number",          # position in conversation (1-indexed)
+    "history_len",          # number of tracks played so far in this session
+    "popularity_pctile",    # rank-percentile of popularity across catalog (0-1)
+    "years_since_release",  # 2026 - release_year, 0 if missing
+    "tag_overlap_count",    # number of candidate tags appearing in the BM25 query
+    "query_len_tokens",     # word count of latest user message (query specificity proxy)
+    "cf_dist_to_last",      # cosine to last played track in CF space (0 for cold users)
+    "cf_dist_to_recent_mean",  # cosine to mean of recent tracks in CF space (0 for cold)
+    "goal_category",        # integer-encoded conversation goal category
 ]
 
 ltr_booster = None
@@ -430,6 +458,11 @@ for item in tqdm(sessions, desc="Sessions"):
     user_id     = item["user_id"]
     goal        = item.get("conversation_goal", {}).get("listener_goal", "")
     culture     = item.get("user_profile", {}).get("preferred_musical_culture", "")
+    _goal_cat   = item.get("conversation_goal", {}).get("category", "")
+    if _goal_cat and _goal_cat not in GOAL_CATEGORY_MAP:
+        GOAL_CATEGORY_MAP[_goal_cat] = _goal_cat_counter[0]
+        _goal_cat_counter[0] += 1
+    goal_category_int = float(GOAL_CATEGORY_MAP.get(_goal_cat, 0))
     conversations = item["conversations"]
 
     if args.blind_mode:
@@ -702,6 +735,28 @@ for item in tqdm(sessions, desc="Sessions"):
                 dist_to_last_arr = tt_embs @ tt_embs[last_idx]
         dist_to_mean_arr = (tt_embs @ mean_session_vec) if mean_session_vec is not None else None
 
+        # CF-space distance arrays (Phase D features)
+        # Note: these use track-track CF embeddings (always available), not user CF
+        # embeddings. So they work for all users, not just warm ones.
+        cf_dist_to_last_arr = None
+        cf_dist_to_mean_arr = None
+        if music_history:
+            last_cf_idx = cf_track_id2idx.get(music_history[-1])
+            if last_cf_idx is not None:
+                cf_dist_to_last_arr = cf_track_embs @ cf_track_embs[last_cf_idx]
+            # mean of recent tracks in CF space
+            cf_hist_idxs = [cf_track_id2idx.get(t) for t in music_history[-args.session_mean_n:]]
+            cf_hist_idxs = [i for i in cf_hist_idxs if i is not None]
+            if cf_hist_idxs:
+                cf_mean_vec = cf_track_embs[cf_hist_idxs].mean(axis=0)
+                cf_mean_norm = np.linalg.norm(cf_mean_vec)
+                if cf_mean_norm > 1e-8:
+                    cf_dist_to_mean_arr = cf_track_embs @ (cf_mean_vec / cf_mean_norm)
+
+        # Tag overlap: precompute set of lowered query words for tag matching
+        _bm25_query_words = set(bm25_query.lower().split())
+        _query_len = len(latest_user.split())
+
         if not cands:
             inference_results.append({
                 "session_id": session_id, "user_id": user_id,
@@ -798,9 +853,26 @@ for item in tqdm(sessions, desc="Sessions"):
                 collab_rank = collab_rank_map.get(tid)
                 collab_rank_sig_f = (1.0 / np.log2(collab_rank + 2.0)) if collab_rank is not None else 0.0
                 _meta = metadata_dict.get(tid, {})
-                _pop  = float(_meta.get("popularity") or 0.0)
+                _pop_raw = _meta.get("popularity")
+                _pop  = float(_pop_raw) if _pop_raw is not None else np.nan
                 _rel  = _meta.get("release_date") or ""
-                _year = float(str(_rel)[:4]) if _rel and str(_rel)[:4].isdigit() else 0.0
+                _year = float(str(_rel)[:4]) if _rel and str(_rel)[:4].isdigit() else np.nan
+                # Phase D: new features
+                _n_sources_f = float(len(srcs))
+                _pop_pctile_f = popularity_pctile.get(tid, 0.0)
+                _yrs_since_f = float(2026 - _year) if not np.isnan(_year) else np.nan
+                _tags = _meta.get("tag_list") or []
+                _tag_overlap_f = float(sum(1 for t in _tags if t.lower() in _bm25_query_words))
+                _cf_dist_last_f = 0.0
+                _cf_dist_mean_f = 0.0
+                if cf_dist_to_last_arr is not None:
+                    _cf_idx = cf_track_id2idx.get(tid)
+                    if _cf_idx is not None:
+                        _cf_dist_last_f = float(cf_dist_to_last_arr[_cf_idx])
+                if cf_dist_to_mean_arr is not None:
+                    _cf_idx = cf_track_id2idx.get(tid)
+                    if _cf_idx is not None:
+                        _cf_dist_mean_f = float(cf_dist_to_mean_arr[_cf_idx])
                 feat[i] = (
                     float(tt_all[idx_tt])   if idx_tt is not None else 0.0,
                     float(qm_all[idx_qm])   if idx_qm is not None else 0.0,
@@ -831,6 +903,17 @@ for item in tqdm(sessions, desc="Sessions"):
                     float(collab_src_count.get(tid, 0)),
                     _pop,
                     _year,
+                    # Phase D: feature engineering v2
+                    _n_sources_f,
+                    float(turn_number),
+                    float(len(music_history)),
+                    _pop_pctile_f,
+                    _yrs_since_f,
+                    _tag_overlap_f,
+                    float(_query_len),
+                    _cf_dist_last_f,
+                    _cf_dist_mean_f,
+                    goal_category_int,
                 )
                 if tid == gold_tid:
                     lbl[i] = 2 if args.soft_labels else 1

@@ -105,6 +105,12 @@ INTERACTION_PAIRS = [
     ("collab_rank_sig", "collab_score", "collab_rank_x_score"),
     ("popularity",  "tt_cos",         "pop_x_tt"),
     ("popularity",  "bm25_signal",    "pop_x_bm25"),
+    # Phase D: interactions with new features
+    ("tag_overlap_count", "bm25_signal",    "tagoverlap_x_bm25"),
+    ("tag_overlap_count", "tt_cos",         "tagoverlap_x_tt"),
+    ("cf_dist_to_last",   "cf_cos",         "cfdist_x_cfcos"),
+    ("n_sources",         "tt_cos",         "nsrc_x_tt"),
+    ("popularity_pctile", "tt_cos",         "poppctile_x_tt"),
 ]
 
 if args.poly_feats:
