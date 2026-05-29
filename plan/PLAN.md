@@ -16,14 +16,17 @@ Quick path for a new session:
 
 ## Active phase
 
-- **Phase 8: Source-aware ranking** — [07_ranking_calibration.md](07_ranking_calibration.md)
-  Pool recall ceiling (0.808) reached; turning it into nDCG via rank-based features
-  for artist/TT/NN candidates and a BM25-origin preservation term.
+- **Phase 10: TT v8 — pool-aware negatives** — [07_ranking_calibration.md](07_ranking_calibration.md)
+  Phase B concluded (0.1653, reg booster). LLM reranking and neural LTR both dropped
+  (hurt or break even). Next: retrain two-tower with pool-aware hard negatives + all
+  15K TRAIN sessions to push pool recall above 83%. Gate: pool recall > 0.830 AND
+  dev nDCG@20 > 0.1653.
 
 ## Score ladder (full 1000-session dev nDCG@20)
 
 ```
-0.1646  Phase A pool + LTR retrained 27-feat nl31 lr0.08                          <- current best (2026-05-24)
+0.1653  Phase B pool (tt_pool=2000) + 29-feat reg LTR nl31 lr0.08 (l2+hessian+path_smooth) <- current best (2026-05-28)
+0.1646  Phase A pool (tt_pool=1000) + 27-feat LTR nl31 lr0.08, 2000 train sessions           (2026-05-27)
 0.1609  v6 fusion + expansion + LTR LambdaMART nl31 lr0.08 (train-only)           (2026-05-15 LTR v3)
 0.1601  v6 fusion + expansion + LTR LambdaMART nl63 lr0.05 (train-only)           (2026-05-11 LTR v2)
 0.1533  v6 fusion + recall expansion (artist + TT@1000 + last-NN@100), v13 wts
@@ -47,15 +50,19 @@ Quick path for a new session:
 | 5: Fusion + recall lift    | done       | [archive/05_recall_improvement.md](archive/05_recall_improvement.md) — 0.1519 best (v13 weights) |
 | 6: Min-pool recall         | done       | [archive/06_min_pool_recall.md](archive/06_min_pool_recall.md) — 0.808 @ ~1468; ceiling reached |
 | 7: Semantic ID (LLM)       | abandoned  | [archive/SEMANTIC_ID_PLAN.md](archive/SEMANTIC_ID_PLAN.md) |
-| **8: Source-aware ranking** | **active** | [07_ranking_calibration.md](07_ranking_calibration.md) |
+| 8: Source-aware ranking     | done       | [07_ranking_calibration.md](07_ranking_calibration.md) — 0.1646 (Phase A LTR) |
+| **9: Phase B LTR + LLM prune** | **active** | [07_ranking_calibration.md](07_ranking_calibration.md) — pop+year features + Opus top-25 rerank |
 
 ## Blind A submissions
 
-Best generated: `exp/inference/blind_a/blind_a_fusion_v13_tuned_qwen.json` (dev nDCG
-0.1519). Fallbacks listed in `CURRENT_BEST_ITERATION.md`. Generation command:
+Versioned folder: `exp/inference/blind_a/submissions/` (README.md inside).
 
-```bash
-python scripts/inference/run_inference_blind_fusion.py --tid blind_a_<id> [weights]
-python scripts/inference/generate_responses_blind.py \
-    --pred exp/inference/blind_a/blind_a_<id>.json
-```
+| Version | Dev nDCG@20 | Retrieval | Response | Status |
+|---|---:|---|---|---|
+| **v06** | **0.1653** | Phase B pool (tt_pool=2000) + 29-feat reg LTR | Gemma-3-12b native API (76/80 track named) | **recommended** |
+| v04 | 0.1646 | Phase A pool + LTR nl31 lr0.08 | DeepSeek V4 Flash (73/80 track named) | superseded |
+| v05 | 0.1646 | same | Gemma-4-e4b local (9/80 track named) | submitted, inferior responses |
+
+Active submission zip: `exp/inference/blind_a/submission/submission.zip` (currently v05;
+copy v04 zip to switch). Retrieval for both: `run_inference_fusion_recall_expansion.py`
+with Phase A expansion flags + `--ltr_model models/ltr/ltr_phase_a_nl31_lr0p08.txt`.

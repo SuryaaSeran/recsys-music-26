@@ -50,8 +50,15 @@ parser.add_argument("--tt_index",    default="cache/twotower_v3")
 parser.add_argument("--tt_query_prefix", default="",
                     help="Prefix prepended to the TT query before encoding (e.g. Qwen3 'Instruct: ...\\nQuery: ').")
 parser.add_argument("--sessions",    type=int,   default=0)
-parser.add_argument("--split",       default="test", choices=["test", "train"],
-                    help="Which dataset split to run on.")
+parser.add_argument("--session_ids_file", default="",
+                    help="JSON file with a list of session_ids (or object with a key matching "
+                         "'golden_200' or first list value). Only those sessions are processed.")
+parser.add_argument("--split",       default="test",
+                    help="Which dataset split to run on (test / train / etc).")
+parser.add_argument("--dataset",     default="talkpl-ai/TalkPlayData-Challenge-Dataset",
+                    help="HF dataset path. Use talkpl-ai/TalkPlayData-Challenge-Blind-A for Blind A.")
+parser.add_argument("--blind_mode",  action="store_true",
+                    help="Predict only the final music turn per session (turn_number = conversations[-1].turn_number). Use with --dataset talkpl-ai/TalkPlayData-Challenge-Blind-A.")
 parser.add_argument("--shuffle_seed", type=int, default=-1,
                     help=">=0: shuffle sessions before taking --sessions slice (deterministic).")
 parser.add_argument("--tid",         default="fusion_recall_v1")
@@ -115,9 +122,25 @@ parser.add_argument("--write_provenance", default="",
                     help="If set, write per-turn provenance JSONL to this path.")
 parser.add_argument("--write_features", default="",
                     help="If set, write per-candidate feature rows to this NPZ path for LTR training.")
+parser.add_argument("--soft_labels", action="store_true",
+                    help="If set, use graded labels: 2=gold, 1=same-artist-as-gold, 0=other. "
+                         "Requires label_gain=[0,1,3] in the LTR trainer. Default: binary 0/1.")
 parser.add_argument("--ltr_model", default="",
                     help="If set, score with this LightGBM booster instead of the linear fusion.")
+parser.add_argument("--ltr_neural", default="",
+                    help="If set, score with this PyTorch MLP directory (from train_ltr_neural.py) "
+                         "instead of the linear fusion. Mutually exclusive with --ltr_model.")
+# TT query richness (set >0 to include extra context matching v8 training format)
+parser.add_argument("--tt_text_turns", type=int, default=0,
+                    help="Prior text turns (user+assistant, before latest_user) to append to the TT query. "
+                         "0=v6 compact. Set 3 for v8 nomic-embed.")
+parser.add_argument("--tt_hist_turns", type=int, default=2,
+                    help="Number of recently played tracks to append to the TT query. "
+                         "2=v6 compact (name/artist only). Set 4 for v8 nomic-embed (full track text).")
 args = parser.parse_args()
+
+if args.ltr_model and args.ltr_neural:
+    raise ValueError("--ltr_model and --ltr_neural are mutually exclusive.")
 
 BM25_CACHE = "cache/bm25/track_metadata"
 
@@ -277,13 +300,24 @@ def _parse_ks(s: str) -> list[int]:
 session_nn_ks_list = _parse_ks(args.session_nn_ks)
 cooccur_ks_list    = _parse_ks(args.cooccur_ks)
 
-print("Loading dev sessions...")
-ds = load_dataset("talkpl-ai/TalkPlayData-Challenge-Dataset")
+print(f"Loading dataset: {args.dataset} [{args.split}]")
+ds = load_dataset(args.dataset)
 sessions = list(ds[args.split])
 if args.shuffle_seed >= 0:
     import random as _r
     _r.Random(args.shuffle_seed).shuffle(sessions)
-if args.sessions > 0:
+if args.session_ids_file:
+    import json as _sjson
+    with open(args.session_ids_file) as _sf:
+        _sd = _sjson.load(_sf)
+    if isinstance(_sd, dict):
+        # e.g. GOLDEN_HOLDOUT_SESSIONS.json with {"golden_200": [...], "eval_800": [...]}
+        _sid_set = set(next(v for v in _sd.values() if isinstance(v, list)))
+    else:
+        _sid_set = set(_sd)
+    sessions = [s for s in sessions if s["session_id"] in _sid_set]
+    print(f"  session_ids_file: keeping {len(sessions)} sessions matching {args.session_ids_file}")
+elif args.sessions > 0:
     sessions = sessions[:args.sessions]
 print(f"Using split={args.split}  n_sessions={len(sessions)}  shuffle_seed={args.shuffle_seed}")
 
@@ -305,6 +339,8 @@ FEATURE_COLS = [
     "nn_source_count", "mean_nn_origin", "mean_nn_rank_sig",
     "dist_to_last", "dist_to_recent_mean",
     "collab_origin", "collab_rank_sig", "collab_score", "collab_source_count",
+    # Phase B additions
+    "popularity", "track_year",
 ]
 
 ltr_booster = None
@@ -316,6 +352,61 @@ if args.ltr_model:
     print(f"Loaded LTR booster: {args.ltr_model}  ({n_booster_feats} features, FEATURE_COLS has {len(FEATURE_COLS)})")
     assert n_booster_feats <= len(FEATURE_COLS), \
         f"booster expects {n_booster_feats} features but FEATURE_COLS only has {len(FEATURE_COLS)}"
+
+# ── Neural LTR model (PyTorch MLP) ───────────────────────────────────────────
+_ltr_neural_model  = None
+_ltr_neural_scaler = None
+_ltr_neural_meta   = None
+if args.ltr_neural:
+    import json as _json
+    import torch as _torch
+    import torch.nn as _nn
+
+    _nd = Path(args.ltr_neural)
+    with open(_nd / "meta.json")   as _f: _ltr_neural_meta   = _json.load(_f)
+    with open(_nd / "scaler.json") as _f: _ltr_neural_scaler = _json.load(_f)
+
+    _hidden = _ltr_neural_meta["hidden"]
+    _nf     = _ltr_neural_meta["n_feats"]
+    _do     = _ltr_neural_meta.get("dropout", 0.1)
+
+    class _MLP(_nn.Module):
+        def __init__(self, n, h, d):
+            super().__init__()
+            layers, i = [], n
+            for o in h:
+                layers += [_nn.Linear(i, o), _nn.ReLU(), _nn.Dropout(d)]
+                i = o
+            layers.append(_nn.Linear(i, 1))
+            self.net = _nn.Sequential(*layers)
+        def forward(self, x): return self.net(x).squeeze(-1)
+
+    _ltr_neural_model = _MLP(_nf, _hidden, _do)
+    _ltr_neural_model.load_state_dict(
+        _torch.load(_nd / "model.pt", map_location="cpu", weights_only=True)
+    )
+    _ltr_neural_model.eval()
+    _neural_feat_cols = _ltr_neural_scaler["feature_cols"]
+    _neural_mean = np.array(_ltr_neural_scaler["mean"], dtype=np.float32)
+    _neural_std  = np.array(_ltr_neural_scaler["std"],  dtype=np.float32)
+
+    # interaction pairs (must match train_ltr_neural.py)
+    _NEURAL_PAIRS = [
+        ("tt_cos",      "bm25_signal",     "tt_x_bm25"),
+        ("tt_rank_sig", "bm25_origin",     "ttrank_x_bm25orig"),
+        ("tt_cos",      "tt_rank_sig",     "tt_x_ttrank"),
+        ("qm_cos",      "bm25_signal",     "qm_x_bm25"),
+        ("artist_sig",  "artist_origin",   "artist_x_orig"),
+        ("nn_sig",      "tt_cos",          "nn_x_tt"),
+        ("collab_rank_sig", "collab_score","collab_rank_x_score"),
+        ("popularity",  "tt_cos",          "pop_x_tt"),
+        ("popularity",  "bm25_signal",     "pop_x_bm25"),
+    ]
+    _neural_use_poly = _ltr_neural_meta.get("poly_feats", False)
+
+    print(f"Loaded neural LTR: {args.ltr_neural}  "
+          f"({_nf} feats, poly={_neural_use_poly}, "
+          f"CV ndcg@20={_ltr_neural_meta['cv_ndcg20_mean']:.4f})")
 
 inference_results = []
 
@@ -341,6 +432,22 @@ for item in tqdm(sessions, desc="Sessions"):
     culture     = item.get("user_profile", {}).get("preferred_musical_culture", "")
     conversations = item["conversations"]
 
+    if args.blind_mode:
+        # In blind mode there is no "music" turn to predict for in the input.
+        # Move all existing music turns to the front (so they populate
+        # music_history first), keep user/assistant turns in order so
+        # text_history is built correctly, then append a synthetic music
+        # turn at the end with the trigger turn_number so the existing
+        # loop emits exactly one prediction per session.
+        last_user_turn_number = conversations[-1]["turn_number"]
+        music_turns = [t for t in conversations if t["role"] == "music"]
+        text_turns  = [t for t in conversations if t["role"] != "music"]
+        conversations = music_turns + text_turns + [{
+            "role": "music",
+            "turn_number": last_user_turn_number,
+            "content": "",  # no gold; we are predicting it
+        }]
+
     user_emb = user_cf.get(user_id)
 
     music_history: list[str] = []
@@ -352,16 +459,35 @@ for item in tqdm(sessions, desc="Sessions"):
                 text_history.append(turn["content"])
             continue
 
+        # In blind_mode, real (historic) music turns carry gold content; they
+        # represent the user's past plays, not turns we need to predict for.
+        # Add them to music_history and skip the prediction logic. Only the
+        # synthetic trailing music turn (content == "") triggers a prediction.
+        if args.blind_mode and turn["content"]:
+            music_history.append(turn["content"])
+            continue
+
         turn_number = turn["turn_number"]
         seen = set(music_history)
 
         latest_user = text_history[-1] if text_history else ""
 
-        # tt compact query
+        # tt query — compact (v6) or rich (v8+)
         tt_parts = [latest_user, goal, culture]
-        for tid in music_history[-2:]:
-            na = get_track_name_artist(tid)
-            if na: tt_parts.append(na)
+        if args.tt_text_turns > 0:
+            # Prior text turns before latest_user (user+assistant interleaved)
+            for txt in text_history[-(args.tt_text_turns + 1):-1]:
+                if txt: tt_parts.append(txt)
+        if args.tt_hist_turns > 2:
+            # v8+: full track text (name|artist|album|tags|year)
+            for tid in music_history[-args.tt_hist_turns:]:
+                ft = get_track_text(tid)
+                if ft: tt_parts.append(ft)
+        else:
+            # v6 compact: name+artist only, last 2 tracks
+            for tid in music_history[-args.tt_hist_turns:]:
+                na = get_track_name_artist(tid)
+                if na: tt_parts.append(na)
         tt_query = " ".join(p for p in tt_parts if p)
 
         # bm25 long query
@@ -564,8 +690,9 @@ for item in tqdm(sessions, desc="Sessions"):
 
         # Pool recall tracking
         gold_track = turn["content"]
-        total_music_turns += 1
-        found_in_pool_count += int(gold_track in cands_set)
+        if gold_track:  # skip in blind_mode where the synthetic music turn has no gold
+            total_music_turns += 1
+            found_in_pool_count += int(gold_track in cands_set)
 
         # Distance arrays (for new ranking features)
         dist_to_last_arr = None
@@ -641,6 +768,10 @@ for item in tqdm(sessions, desc="Sessions"):
             n_cands_local = len(cands)
             feat = np.zeros((n_cands_local, len(FEATURE_COLS)), dtype=np.float32)
             lbl  = np.zeros(n_cands_local, dtype=np.int8)
+            # For soft labels: pre-compute gold artist for partial-credit assignment
+            if args.soft_labels:
+                _gmeta = metadata_dict.get(gold_tid, {})
+                gold_artist = ((_gmeta.get("artist_name") or [""])[0] or "").lower()
             for i, tid in enumerate(cands):
                 bm25_s = bm25_native_sig.get(tid, args.bm25_missing_floor)
                 idx_tt = tt_id2idx.get(tid)
@@ -666,6 +797,10 @@ for item in tqdm(sessions, desc="Sessions"):
                 dist_mean_f = float(dist_to_mean_arr[idx_tt_for_dist]) if (dist_to_mean_arr is not None and idx_tt_for_dist is not None) else 0.0
                 collab_rank = collab_rank_map.get(tid)
                 collab_rank_sig_f = (1.0 / np.log2(collab_rank + 2.0)) if collab_rank is not None else 0.0
+                _meta = metadata_dict.get(tid, {})
+                _pop  = float(_meta.get("popularity") or 0.0)
+                _rel  = _meta.get("release_date") or ""
+                _year = float(str(_rel)[:4]) if _rel and str(_rel)[:4].isdigit() else 0.0
                 feat[i] = (
                     float(tt_all[idx_tt])   if idx_tt is not None else 0.0,
                     float(qm_all[idx_qm])   if idx_qm is not None else 0.0,
@@ -694,9 +829,15 @@ for item in tqdm(sessions, desc="Sessions"):
                     collab_rank_sig_f,
                     float(collab_score_map.get(tid, 0.0)),
                     float(collab_src_count.get(tid, 0)),
+                    _pop,
+                    _year,
                 )
                 if tid == gold_tid:
-                    lbl[i] = 1
+                    lbl[i] = 2 if args.soft_labels else 1
+                elif args.soft_labels and gold_artist:
+                    cand_artist = ((_meta.get("artist_name") or [""])[0] or "").lower()
+                    if cand_artist and cand_artist == gold_artist:
+                        lbl[i] = 1  # same artist, partial credit
             if args.write_features:
                 feat_chunks.append(feat)
                 label_chunks.append(lbl)
@@ -707,6 +848,24 @@ for item in tqdm(sessions, desc="Sessions"):
 
         if ltr_booster is not None and feat is not None:
             total_arr = ltr_booster.predict(feat[:, :n_booster_feats]).astype(np.float32)
+
+        if _ltr_neural_model is not None and feat is not None:
+            import torch as _torch
+            _base_feats = feat[:, :len(FEATURE_COLS)].astype(np.float32)
+            if _neural_use_poly:
+                _col_idx = {n: i for i, n in enumerate(FEATURE_COLS)}
+                _extra = []
+                for _fa, _fb, _ in _NEURAL_PAIRS:
+                    _ia, _ib = _col_idx.get(_fa), _col_idx.get(_fb)
+                    if _ia is not None and _ib is not None:
+                        _extra.append(_base_feats[:, _ia] * _base_feats[:, _ib])
+                if _extra:
+                    _base_feats = np.hstack([_base_feats] + [c[:, None] for c in _extra])
+            _norm = (_base_feats - _neural_mean[:_base_feats.shape[1]]) / _neural_std[:_base_feats.shape[1]]
+            with _torch.no_grad():
+                total_arr = _ltr_neural_model(
+                    _torch.from_numpy(_norm)
+                ).numpy().astype(np.float32)
 
         top_idx = np.argsort(total_arr)[::-1][:args.topk]
         predicted_track_ids = [cands[i] for i in top_idx]

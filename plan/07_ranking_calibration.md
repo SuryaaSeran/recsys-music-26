@@ -1,250 +1,163 @@
-# Plan: Source-aware ranking on the high-recall pool
+# Plan: Source-aware ranking + Phase B + Phase C TT v8
 
-## Goal
+---
 
-Translate the 80.8% pool recall into nDCG@20 gain. Current best nDCG = 0.1519 on a
-BM25@500-only pool (59.0% gold availability). The recall-expansion pool (artist +
-TT@1000) hits 0.808 gold availability but produces nDCG = 0.1518 — rescued candidates
-cannot rank because they enter with bm25_signal = 0 (or a flat floor).
+## Status summary (as of 2026-05-28)
 
-## Hypothesis
+| Phase | Result | Note |
+|---|---|---|
+| A: Source-aware LTR | Done | 0.1646 nDCG@20 (27-feat, tt_pool=1000) |
+| B: +popularity/year, tt_pool=2000 | Done | **0.1653** nDCG@20 (29-feat, reg booster) |
+| B addon: LLM reranking | Dropped | All rerankers hurt or break even vs LTR |
+| B addon: Neural LTR (ListNet MLP) | Dropped | Gradient signal too weak on large pools |
+| C: TT v8 pool-aware negatives | Not started | Next up |
 
-Non-BM25 candidates need their own ranking features (rank-based, source-aware). Once
-they do, the additional 21.8% of gold tracks in the pool should start landing in the
-top 20.
+**Current best:** `models/ltr/ltr_phase_b_reg_nl31_lr0p08.txt`, 29 features,
+`--tt_pool 2000`, full-dev nDCG@20 = 0.1653.
 
-## Production Recall Pool (frozen for ranking work)
+---
 
-```
-BM25@500 + artist + TT-v6@1000 + last-track-NN@100   (pool ~1468, recall 0.808)
-```
+## Phase C: TT v8 — pool-aware negatives + all TRAIN sessions (next)
 
-Iteration pool (faster, ~half the cost, same shape):
+### What the current TT model is and why it can be improved
 
-```
-BM25@300 + artist + TT-v6@500  + last-track-NN@100   (pool ~876,  recall 0.745)
-```
+**Current model: TT v6** (`models/twotower_v6/final`)
+- Base: `sentence-transformers/all-MiniLM-L6-v2`, 384 dim, 256 token max
+- Training data: `data/twotower_v6/` — 85,559 train / 6,072 valid examples
+- Session coverage: subset of TRAIN sessions (not all 15,199)
+- Anchor: `{latest user turn} {goal} {culture/type} {last 2 played tracks}`
+- Track text: `name | artist | album | top-12 tags | year`
+- Negatives: 2 random + 2 BM25@100 + 1 rejected (DOES_NOT_MOVE_TOWARD_GOAL)
+- Loss: MultipleNegativesRankingLoss, 2 epochs, lr=2e-5, batch=32, 43 min total
+- Pool recall at tt_pool=2000: ~83% (Phase B pool)
 
-## Source-aware scoring
+**TT v7 (tried, failed — dev nDCG@20 = 0.1584):**
+- Base: `Qwen/Qwen3-Embedding-0.6B` (1024 dim, bigger model)
+- All 15K TRAIN sessions + 47K cold catalog pairs
+- 1 epoch only, 22K session examples (less than v6's 85K)
+- Root cause: bigger model alone doesn't help; fewer session examples + cold-track
+  dilution + 1 epoch = less session-signal per parameter
 
-Each candidate carries the origin sources (BM25, artist, TT, NN) and per-source rank.
-New ranking features on top of existing fusion:
+**Why TT v8 might help:**
+Pool recall ceiling is 83%. TT is the largest single recall source. Better negatives
+(sampled from the actual pool, not random BM25) sharpen the cosine margin so gold
+ranks higher within the pool. The fix is not a bigger model; it's pool-aware negatives.
 
-```
-bm25_signal = bm25_norm if in_bm25_pool else bm25_missing_floor    # stays inside w_bm25
-artist_sig  = 1/log2(artist_rank + 2) if matched else 0            # rank within artist catalog
-nn_sig      = 1/log2(min_nn_rank + 2) if NN-hit else 0             # min rank across source tracks
-tt_rank_sig = 1/log2(tt_rank + 2)     if in_tt_pool else 0
-bm25_origin = 1 if "bm25" in sources else 0                        # preservation feature
+### Three changes from v6 → v8
 
-score =   w_bm25         * bm25_signal
-        + w_tt           * tt_cosine
-        + w_qwen_meta    * qm_cosine
-        + w_qwen_lyr     * ql_cosine
-        + w_clap         * clap_cosine
-        + w_cf           * cf_cosine
-        + w_tt_rank      * tt_rank_sig
-        + w_artist       * artist_sig
-        + w_nn           * nn_sig
-        + w_bm25_origin  * bm25_origin
-```
+| | v6 | v8 |
+|---|---|---|
+| Base model | all-MiniLM-L6-v2 (384d) | same |
+| Sessions | subset of TRAIN | all 15,199 TRAIN; cap 3 turns/session; exclude LTR seed 2000 |
+| Negatives | 2 random + 2 BM25@100 + 1 rejected | 2 random + 3 Phase B pool samples (not gold) |
+| Epochs | 2 | 2 |
 
-- `bm25_missing_floor` is **inside** w_bm25 (replaces the BM25 signal value for non-BM25
-  candidates); it is not a raw additive constant.
-- `artist_rank` is the position of the track within the matched artist's catalog
-  (proxy: order in the metadata-derived list, capped at `--artist_cap`).
-- `nn_rank` is the smallest rank across any of the last-N source tracks for which this
-  candidate is a TT-space neighbor.
+Pool-aware negatives: for each music turn in TRAIN, build the Phase B pool (BM25@500 +
+artist + TT-v6@2000 + NN@100 + Qwen@500 + CF@200 + co-occurrence), sample 3 non-gold
+candidates from the pool. These are the same hard candidates the model sees at eval time.
 
-Sweep (Step 3, narrowed):
+Excluding LTR seed sessions (shuffle_seed=42, first 2000): keeps the LTR booster
+leak-free when we retrain it on v8-based features.
 
-```
-bm25_missing_floor : 0.00, 0.03, 0.05, 0.08, 0.10
-w_tt_rank          : 0.00, 0.03, 0.05, 0.08
-w_artist           : 0.00, 0.02, 0.05
-w_nn               : 0.00, 0.02, 0.05
-w_bm25_origin      : 0.00, 0.02, 0.05
-```
+### Files
 
-Holding the v13_tuned base weights constant initially; co-tune in pass 2.
+- `scripts/train/build_twotower_v8_data.py` (new) — derived from v7 data builder:
+  - All TRAIN sessions, max 3 turns each, exclude seed 2000
+  - Pool-aware hard negatives (import pool helpers from inference script or inline)
+  - Output: `data/twotower_v8/{train,valid}.jsonl`
+- `scripts/train/train_twotower_qwen.py` (reuse, same base model)
+- `scripts/inference/build_twotower_index.py` (reuse)
 
-### Baselines (must match before sweeping)
+### Commands
 
-- **A**: expanded pool, old scorer (current `run_inference_fusion_recall_expansion.py`
-  at HEAD before this work).
-- **B**: expanded pool, new code path, `w_tt_rank=w_artist=w_nn=w_bm25_origin=0`,
-  `bm25_missing_floor=0.05` (same as A).
+```bash
+# 1. Build training data
+python scripts/train/build_twotower_v8_data.py \
+  --out_dir data/twotower_v8 \
+  --hard_negs 3 --max_turns_per_session 3 \
+  --exclude_seed 42 --exclude_n 2000
 
-If A ≠ B (within 0.0005 nDCG), the source-tracking refactor changed scoring
-unintentionally; halt and diff.
+# 2. Train
+python scripts/train/train_twotower_qwen.py \
+  --base_model sentence-transformers/all-MiniLM-L6-v2 \
+  --data_dir data/twotower_v8 \
+  --out_dir models/twotower_v8 \
+  --epochs 2 --lr 2e-5 --batch_size 32 --warmup_steps 200
 
-## Provenance (for the failure table)
+# 3. Build index
+python scripts/inference/build_twotower_index.py \
+  --model models/twotower_v8/final \
+  --out cache/twotower_v8
 
-Per turn JSONL with at minimum:
+# 4. Dev inference (Phase B pool + Phase B reg booster, just swap TT index)
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+python scripts/inference/run_inference_fusion_recall_expansion.py \
+  --tid phase_c_tt8 \
+  --tt_model models/twotower_v8/final --tt_index cache/twotower_v8 \
+  --tt_pool 2000 --artist_expansion --last_nn_k 100 --last_nn_src 2 \
+  --bm25_missing_floor 0.05 \
+  --qwen_pool 500 --cf_pool 200 --session_mean_k 100 \
+  --cooccur_table cache/cooccur/next_song_leakfree.npz --cooccur_ks 300,150,50 \
+  --ltr_model models/ltr/ltr_phase_b_reg_nl31_lr0p08.txt
 
-```
-session_id, turn_number, gold_track_id,
-found_in_pool, found_by[bm25|artist|tt|nn], pool_size,
-bm25_rank, tt_rank, artist_match_source, nn_source_track,
-final_rank, final_score, score_components{...}
-```
-
-Used to produce the failure breakdown:
-
-```
-BM25 found + top20 / BM25 found + miss
-artist rescued + top20 / artist rescued + miss
-TT rescued + top20 / TT rescued + miss
-NN rescued + top20 / NN rescued + miss
-unreachable
-```
-
-This decides whether v7 training should target unreachable recall, rescued-but-low-
-ranked, or both.
-
-## Files
-
-To modify:
-- `scripts/inference/run_inference_fusion_recall_expansion.py`
-  - add `--last_nn_k`, `--last_nn_src` (default 2) flags
-  - track per-candidate `sources` (set of bm25/artist/tt/nn) and per-source rank
-  - new weights: `--w_tt_rank`, `--w_artist`, `--w_nn`
-  - optional `--write_provenance <path.jsonl>`
-
-To create:
-- `scripts/inference/sweep_source_aware.py` — driver that runs the inference with
-  combos and pipes through `evaluate_local.py`, writes a summary table.
-- Final report table per config:
-
-| Config | nDCG | Hit@20 | BM25-hit top20 | Artist-rescue top20 | TT-rescue top20 | NN-rescue top20 |
-| ------ | ---: | -----: | -------------: | ------------------: | --------------: | --------------: |
-
-  Bucket = which source(s) contained the gold; bucket metrics report top-20 rate
-  conditioned on each.
-
-## Steps
-
-1. Plan written (this file). ✅
-2. Add NN@K expansion to `run_inference_fusion_recall_expansion.py`.
-3. Add per-candidate source tracking + new features + flags.
-4. Add optional provenance JSONL writer (off by default to keep eval fast).
-5. Single-config dev run with new pool to establish a fresh baseline nDCG.
-6. Sweep source-aware weights. Best config goes to leaderboard table.
-7. If nDCG > 0.1519: rerun blind with the new weights, update CURRENT_BEST_ITERATION.
-8. If not: dump provenance, build failure table, decide v7 training data.
-
-## Validation
-
-- Step 5: dev nDCG@20 on full 1000 sessions, no NaNs, pool size mean ≈ 1450.
-- Step 6: dev nDCG@20 per config table, ≥ 1 config beats 0.1519.
-- Step 8 (if needed): failure-table counts sum to 8000 turns.
-
-## Risks
-
-- Adding NN candidates × NN sources doubles candidates in the worst case; mitigated
-  by dedup and the cap (`last_nn_k * last_nn_src`).
-- Rank features need consistent indexing (tt_rank = ∞ for non-TT-pool cands). Use
-  a large sentinel so 1/log2 ≈ 0.
-- Source flags collinear with rank scores; sweep should not co-vary them blindly.
-
-## Result: full 1000-session parity-B (no new features)
-
-Config B (expansion pool with last-track-NN@100, v13 weights, all new
-`w_*=0`, `bm25_missing_floor=0.05`) ran on the full dev set:
-
-```
-nDCG@20  0.1533   (+0.0014 over prior best 0.1519)
-Hit@20   31.7%
+python scripts/inference/evaluate_local.py --pred exp/inference/devset/phase_c_tt8.json
 ```
 
-The +0.0014 is entirely from adding NN@100 candidates -- the rescore is
-identical to v13. The prior expansion-pool-without-NN tested at 0.1518, so
-this is a real, NN-attributable lift. Updated
-`plan/CURRENT_BEST_ITERATION.md`.
+### Gate
 
-This invalidates the "parity must match A==B within 0.0005" check from earlier
-in this plan -- because the new pool is strictly larger (adds NN candidates),
-A and B were never going to match. The relevant comparison is:
+- Pool recall (v8) > 0.830 AND dev nDCG@20 > 0.1653 → retrain LTR on v8 features,
+  re-evaluate.
+- Pool recall flat or worse → recall ceiling is a model-architecture constraint; accept
+  83% and focus elsewhere.
 
-```
-old pool   (artist + TT@1000)             v13 weights  ->  0.1518
-new pool   (artist + TT@1000 + NN@100)    v13 weights  ->  0.1533  (+0.0015)
-```
+### Cost
 
-That is the NN ablation, and it positive.
+~1 h data build + ~45 min training + ~40 min index build + ~35 min dev inference = ~3 h.
 
-Next: continue Step 6 -- sweep `w_tt_rank, w_artist, w_nn, w_bm25_origin,
-bm25_missing_floor` on top of this 0.1533 baseline. Bucket-level reporting
-(BM25-hit / artist-rescue / TT-rescue / NN-rescue top-20 rates) is still TBD.
+---
 
-## LTR pivot (2026-05-11)
+## Phase B: popularity + year features (concluded, 2026-05-28, best = 0.1653)
 
-Replaced the linear grid sweep with a LightGBM LambdaMART ranker on 15
-features (6 cosines + 4 rank/origin features + 4 source flags + cold_user +
-pool_size). Implementation:
+### What changed from Phase A (0.1646)
 
-- `--write_features <path.npz>` on the inference script dumps per-candidate
-  features per turn (15 dims) + binary gold labels + group ids.
-- `scripts/train/train_ltr_lightgbm.py` does session-stratified 5-fold
-  LambdaMART training with ndcg@20 metric and early stopping.
-- `--ltr_model <booster.txt>` on the inference script swaps the linear sum
-  for `booster.predict(features)` per turn.
+| Component | Phase A | Phase B |
+|---|---|---|
+| TT pool size | `--tt_pool 1000` | `--tt_pool 2000` |
+| LTR features | 27 | 29 (+`popularity`, +`track_year`) |
+| LTR booster | plain nl31 lr0.08 | regularized (lambda_l2=0.1, min_sum_hessian=0.1, path_smooth=1.0) |
+| LLM rerank | none | TESTED, DROPPED (hurts) |
+| Neural LTR | none | TESTED, DROPPED (gradient signal issue) |
 
-### v1 result (dev-only training, CV)
+### Results
 
-Feature dump on full dev, train booster with 5-fold CV by session:
+- Phase B plain (no reg, 29-feat, tt_pool=2000): dev 0.1646 -- flat vs Phase A
+- Phase B reg (l2+hessian+path_smooth): dev **0.1653** -- new best (+0.0007)
+- Golden-200 verification: reg 0.1595 / Hit@20 542 vs Phase A 0.1582 / 528
 
-```
-Fold ndcg@20: 0.3553  0.3337  0.3551  0.3572  0.3905
-CV mean:     0.3584   (std 0.0182)
-Top features by gain:
-  tt_cos          113017
-  tt_rank_sig      71834
-  artist_sig       56736
-  bm25_signal      44635
-  nn_sig           11018
-  qm_cos           10204
-  cf_cos            9568
-```
+### LLM reranking (dropped)
 
-**Important caveat:** v1 is trained on the dev set. The CV folds give a clean
-held-out signal (0.358), but a re-fit-on-all-dev model is then overfit when
-applied back to dev. Need to retrain on the TRAIN split before claiming a
-real dev number for the leaderboard.
+Tested three approaches; all failed to beat LTR:
+1. CE v3 (bge-reranker-v2-m3, pool-aware negs, top-150): 0.1228 on dev -- large regression
+2. Gemma-3-12b conservative prune (25→20, local LM Studio): 0.0812 vs baseline 0.0818 on 50-session pilot -- regression
+3. Claude Opus listwise rerank: not tested (no API key)
 
-### Engineering notes
+Root cause: LightGBM LambdaMART with 29 engineered features already captures the signal
+a reranker would use (tt_cos, cf_cos, dist_to_recent_mean dominate). Adding a reranker
+on top adds noise without useful signal.
 
-- On macOS, importing lightgbm AFTER torch/transformers causes a silent OMP
-  abort. Workaround: import lightgbm at top of inference script with
-  `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1` env vars at runtime. See commit
-  `c745005` plus follow-ups.
-- LightGBM was installed via pip; libomp had to be `brew install libomp`'d
-  for the `.dylib` rpath to resolve.
+### Neural LTR (dropped)
 
-### Next: retrain on TRAIN split
+ListNet MLP (256→128→64→1) on 29 features: loss stuck at log(pool_size) ≈ 7.96 across
+all epochs. Root cause: `softmax(gains)` over ~2864-item pool with 1 positive gives
+target probability ~1/2864 for most items; gradient at the positive is ~0.0006.
+LightGBM LambdaMART handles this directly (pairwise, not listwise softmax).
 
-1. Run `run_inference_fusion_recall_expansion.py --split train --write_features
-   exp/analysis/ltr_train_features.npz` (note: needs a `--split` flag added).
-2. Train booster on train features.
-3. Eval on dev features through the inference pipeline.
-4. If dev nDCG@20 > 0.1533: update CURRENT_BEST_ITERATION.md; port to blind.
+---
 
-## Smoke Test (20 sessions, 160 turns)
+## Phase A: Source-aware ranking (concluded, 2026-05-24, best = 0.1646)
 
-Run: `--tt_pool 1000 --artist_expansion --last_nn_k 100 --last_nn_src 2
---bm25_missing_floor 0.05 --w_tt_rank 0 --w_artist 0 --w_nn 0 --w_bm25_origin 0
---write_provenance exp/analysis/prov_smoke.jsonl` (config B = parity baseline).
+LightGBM LambdaMART on 27 features (cosines + rank signals + source flags + collab).
+Trained on 2000 TRAIN sessions (shuffle_seed=42), 5-fold session-stratified CV.
+CV ndcg@20 = 0.3586 (std 0.0183). Dev nDCG@20 = 0.1646. Booster: `ltr_phase_a_nl31_lr0p08.txt`.
 
-- Throughput: ~2.35 s / turn (≈ 40 min for full 1000 sessions).
-- Pool size: ≈ 1400 (matches sweep prediction).
-- Provenance schema verified end-to-end.
-- Example failure already visible (turn 2 of first session): gold found only by TT
-  at tt_rank=198, final_rank=435. Exactly the rescued-but-not-ranked case.
-
-Next: run full 1000-session config-A vs config-B parity, then sweep.
-
-## Score Targets
-
-- Step 5 baseline (no calibration): expected ~0.1518 (parity).
-- Step 6 with calibration: target ≥ 0.155 dev nDCG. Anything < 0.152 = falsifies
-  hypothesis, escalate to provenance analysis.
+Full Phase A development history: `plan/archive/` (phases 01-07).

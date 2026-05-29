@@ -18,7 +18,9 @@ from tqdm import tqdm
 parser = argparse.ArgumentParser()
 parser.add_argument("--model", default="models/twotower_v1/final")
 parser.add_argument("--out_dir", default="cache/twotower")
-parser.add_argument("--batch_size", type=int, default=512)
+parser.add_argument("--batch_size", type=int, default=32)
+parser.add_argument("--doc_prefix", default="", help="Prefix prepended to every track text before encoding (e.g. 'search_document: ' for nomic-embed)")
+parser.add_argument("--trust_remote_code", action="store_true", help="Pass trust_remote_code=True to SentenceTransformer")
 args = parser.parse_args()
 
 print("Loading track metadata...")
@@ -48,12 +50,12 @@ def get_track_text(tid: str) -> str:
 
 
 print(f"Loading model: {args.model}")
-model = SentenceTransformer(args.model)
+model = SentenceTransformer(args.model, trust_remote_code=args.trust_remote_code)
 
 track_ids = list(metadata_dict.keys())
-track_texts = [get_track_text(tid) for tid in track_ids]
+track_texts = [args.doc_prefix + get_track_text(tid) for tid in track_ids]
 
-print(f"Encoding {len(track_ids):,} tracks...")
+print(f"Encoding {len(track_ids):,} tracks (doc_prefix={repr(args.doc_prefix)})...")
 embeddings = model.encode(
     track_texts,
     batch_size=args.batch_size,

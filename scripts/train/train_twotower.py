@@ -35,6 +35,8 @@ parser.add_argument("--warmup_steps", type=int, default=200)
 parser.add_argument("--hard_neg", action="store_true", help="Include BM25 hard negative_1 in training")
 parser.add_argument("--triplet", action="store_true", help="Use TripletLoss instead of MNRL (requires hard_neg)")
 parser.add_argument("--triplet_margin", type=float, default=0.5, help="Margin for TripletLoss")
+parser.add_argument("--trust_remote_code", action="store_true", help="Pass trust_remote_code=True to SentenceTransformer (e.g. nomic-embed)")
+parser.add_argument("--max_seq_length", type=int, default=None, help="Override model max_seq_length after loading")
 args = parser.parse_args()
 
 
@@ -62,7 +64,9 @@ train_ds = Dataset.from_list(train_data)
 valid_ds = Dataset.from_list(valid_data)
 
 print(f"Loading base model: {args.base_model}")
-model = SentenceTransformer(args.base_model)
+model = SentenceTransformer(args.base_model, trust_remote_code=args.trust_remote_code)
+if args.max_seq_length:
+    model.max_seq_length = args.max_seq_length
 if args.triplet:
     if not args.hard_neg:
         raise ValueError("--triplet requires --hard_neg")

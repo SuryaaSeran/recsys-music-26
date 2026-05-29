@@ -32,6 +32,8 @@ parser.add_argument("--batch_size", type=int, default=32)
 parser.add_argument("--blend", type=float, default=0.0,
                     help="If >0, final score = blend*ltr_rank_sig + (1-blend)*ce_score. "
                          "Preserves some LTR signal.")
+parser.add_argument("--query_template", default="default", choices=["default", "multi_turn"],
+                    help="default = legacy v2 anchor; multi_turn = [TURN-3]/[TURN-2]/[TURN-1] tagged (matches CE v3 training).")
 args = parser.parse_args()
 
 out_path = args.out or args.pred.replace(".json", "_ce.json")
@@ -113,6 +115,38 @@ def build_query(session: dict, turn_number: int) -> str:
     return " ".join(parts)
 
 
+def build_query_multiturn(session: dict, turn_number: int) -> str:
+    """Multi-turn query matching CE v3 training format:
+    [TURN-3] {oldest user turn} [TURN-2] {middle} [TURN-1] {most recent}
+    Goal: ... Culture: ...
+    Older user turns are left empty if fewer than 3 exist."""
+    goal = (session.get("conversation_goal") or {}).get("listener_goal", "")
+    culture = (session.get("user_profile") or {}).get("preferred_musical_culture", "")
+    user_turns: list[str] = []
+    for turn in session.get("conversations") or []:
+        if turn.get("turn_number") == turn_number and turn.get("role") == "music":
+            break
+        if turn.get("role") == "user":
+            user_turns.append(turn["content"])
+    last3 = user_turns[-3:]
+    while len(last3) < 3:
+        last3 = [""] + last3
+    parts = [
+        f"[TURN-3] {last3[0]}".strip(),
+        f"[TURN-2] {last3[1]}".strip(),
+        f"[TURN-1] {last3[2]}".strip(),
+    ]
+    if goal:    parts.append(f"Goal: {goal}")
+    if culture: parts.append(f"Culture: {culture}")
+    return " ".join(parts).strip()
+
+
+def make_query(session, turn_number):
+    if args.query_template == "multi_turn":
+        return build_query_multiturn(session, turn_number)
+    return build_query(session, turn_number)
+
+
 # ── Rerank loop ──────────────────────────────────────────────────────────────
 results = []
 order_changes = 0
@@ -123,7 +157,7 @@ for p in tqdm(preds, desc="rerank"):
     if session is None or len(top_tids) < 2:
         results.append(p); continue
 
-    query = build_query(session, p["turn_number"])
+    query = make_query(session, p["turn_number"])
     cand_texts = [get_candidate_text(t) for t in top_tids]
     pairs = [(query, c) for c in cand_texts]
     scores = ce.predict(pairs, batch_size=args.batch_size, show_progress_bar=False)
