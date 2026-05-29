@@ -16,11 +16,12 @@ Quick path for a new session:
 
 ## Active phase
 
-- **Phase 10: TT v8 — pool-aware negatives** — [07_ranking_calibration.md](07_ranking_calibration.md)
-  Phase B concluded (0.1653, reg booster). LLM reranking and neural LTR both dropped
-  (hurt or break even). Next: retrain two-tower with pool-aware hard negatives + all
-  15K TRAIN sessions to push pool recall above 83%. Gate: pool recall > 0.830 AND
-  dev nDCG@20 > 0.1653.
+- **Phase 10: TT v8 — larger context window + LoRA** — [07_ranking_calibration.md](07_ranking_calibration.md)
+  Phase B concluded (0.1653, reg booster). TT v8 replaces all-MiniLM-L6-v2 (256-tok)
+  with intfloat/multilingual-e5-base (512-tok, LoRA r=16) and richer tokenizer-aware
+  anchors. Training in progress (eval loss 0.677→0.626 across 4 checkpoints, 2026-05-29).
+  After training: build index, quick eval with old LTR, then retrain LTR on v8 features.
+  Gate: pool recall > 0.830 AND dev nDCG@20 > 0.1653.
 
 ## Score ladder (full 1000-session dev nDCG@20)
 

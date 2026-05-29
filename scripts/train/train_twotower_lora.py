@@ -1,15 +1,35 @@
-"""Fine-tune intfloat/multilingual-e5-large as a two-tower retrieval model with LoRA.
+"""Fine-tune intfloat/multilingual-e5-base (or any XLM-R family model) as a two-tower
+retrieval model using LoRA.
 
-Loads data/twotower_v8/{train,valid}.jsonl (anchor, positive [, negative_*]).
-Uses MultipleNegativesRankingLoss with in-batch negatives.
-Merges LoRA adapters into base weights and saves as a vanilla SentenceTransformer
-so downstream code can load it with SentenceTransformer(path).
+Why LoRA: full fine-tuning of 279M+ param models OOMs on Apple MPS (M4 16GB) because
+Adam optimizer states alone require ~3x model weights. LoRA trains only ~885K params
+(r=16 on q/k/v, 0.32% of total), dropping optimizer memory from ~3GB to ~7MB.
+Gradient checkpointing (--gradient_checkpointing) is also required to keep activation
+memory below the MPS limit.
+
+Model notes:
+  - multilingual-e5-base: 12L, 768-dim, 279M params, 512-token max. Requires
+    "query: " prefix on anchors and "passage: " prefix on documents at both
+    train and inference time. Use build_twotower_v8_data.py to build training data
+    with these prefixes already baked in.
+  - LoRA target modules for XLM-RoBERTa: "query,key,value" (default).
+    For Qwen-family use "q_proj,k_proj,v_proj,o_proj".
+
+After training, LoRA adapters are merged into the base weights and saved as a vanilla
+SentenceTransformer so downstream code (build_twotower_index.py, inference) loads it
+with SentenceTransformer(path) without needing peft installed.
+
+Trained model: models/twotower_v8/final/
+Index must be rebuilt after training: scripts/train/build_twotower_index.py
+  --model models/twotower_v8/final --out_dir cache/twotower_v8
+  --doc_prefix "passage: " --batch_size 32
 
 Usage:
     python scripts/train/train_twotower_lora.py \\
         --data_dir data/twotower_v8 \\
         --out_dir models/twotower_v8 \\
-        --epochs 2 --batch_size 8 --grad_accum 4 --lr 1e-4 --warmup_steps 200
+        --epochs 2 --batch_size 16 --grad_accum 4 \\
+        --lr 1e-4 --warmup_steps 200 --gradient_checkpointing
 """
 import argparse
 import json
@@ -28,7 +48,7 @@ os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
 parser = argparse.ArgumentParser()
 parser.add_argument("--data_dir", default="data/twotower_v8")
 parser.add_argument("--out_dir", default="models/twotower_v8")
-parser.add_argument("--base_model", default="intfloat/multilingual-e5-large")
+parser.add_argument("--base_model", default="intfloat/multilingual-e5-base")
 parser.add_argument("--epochs", type=int, default=2)
 parser.add_argument("--batch_size", type=int, default=8)
 parser.add_argument("--grad_accum", type=int, default=4)

@@ -17,102 +17,145 @@
 
 ---
 
-## Phase C: TT v8 — pool-aware negatives + all TRAIN sessions (next)
+## Phase C: TT v8 — larger context window + LoRA fine-tuning (in progress, 2026-05-29)
 
-### What the current TT model is and why it can be improved
+### Root problem fixed
 
-**Current model: TT v6** (`models/twotower_v6/final`)
-- Base: `sentence-transformers/all-MiniLM-L6-v2`, 384 dim, 256 token max
-- Training data: `data/twotower_v6/` — 85,559 train / 6,072 valid examples
-- Session coverage: subset of TRAIN sessions (not all 15,199)
-- Anchor: `{latest user turn} {goal} {culture/type} {last 2 played tracks}`
-- Track text: `name | artist | album | top-12 tags | year`
-- Negatives: 2 random + 2 BM25@100 + 1 rejected (DOES_NOT_MOVE_TOWARD_GOAL)
-- Loss: MultipleNegativesRankingLoss, 2 epochs, lr=2e-5, batch=32, 43 min total
-- Pool recall at tt_pool=2000: ~83% (Phase B pool)
+TT v6 uses `all-MiniLM-L6-v2` (256-token max). The rich query the system wants to encode
+(latest user request + goal + culture + 4 track texts with tags + 3 prior turns) is
+300-500 tokens median. MiniLM truncates from the right, cutting the user request when
+it is placed last. v6 worked around this with a compact format that put the user request
+first but omitted most conversational history. v8 removes this constraint entirely.
 
-**TT v7 (tried, failed — dev nDCG@20 = 0.1584):**
-- Base: `Qwen/Qwen3-Embedding-0.6B` (1024 dim, bigger model)
-- All 15K TRAIN sessions + 47K cold catalog pairs
-- 1 epoch only, 22K session examples (less than v6's 85K)
-- Root cause: bigger model alone doesn't help; fewer session examples + cold-track
-  dilution + 1 epoch = less session-signal per parameter
+### Model: `intfloat/multilingual-e5-base`
 
-**Why TT v8 might help:**
-Pool recall ceiling is 83%. TT is the largest single recall source. Better negatives
-(sampled from the actual pool, not random BM25) sharpen the cosine margin so gold
-ranks higher within the pool. The fix is not a bigger model; it's pool-aware negatives.
-
-### Three changes from v6 → v8
-
-| | v6 | v8 |
+| Property | TT v6 | TT v8 |
 |---|---|---|
-| Base model | all-MiniLM-L6-v2 (384d) | same |
-| Sessions | subset of TRAIN | all 15,199 TRAIN; cap 3 turns/session; exclude LTR seed 2000 |
-| Negatives | 2 random + 2 BM25@100 + 1 rejected | 2 random + 3 Phase B pool samples (not gold) |
-| Epochs | 2 | 2 |
+| Base model | all-MiniLM-L6-v2 | multilingual-e5-base |
+| Architecture | BERT-6L | XLM-RoBERTa-base (12L) |
+| Max tokens | 256 | 512 |
+| Embedding dim | 384 | 768 |
+| Total params | 22M | 279M |
+| Fine-tuning | full (22M) | LoRA r=16 (885K = 0.32%) |
+| Query prefix | none | `query: ` |
+| Doc prefix | none | `passage: ` |
 
-Pool-aware negatives: for each music turn in TRAIN, build the Phase B pool (BM25@500 +
-artist + TT-v6@2000 + NN@100 + Qwen@500 + CF@200 + co-occurrence), sample 3 non-gold
-candidates from the pool. These are the same hard candidates the model sees at eval time.
+Why LoRA: full fine-tuning of 279M params OOMs on MPS (M4 16GB) because Adam optimizer
+states alone require ~3x model weights (~3GB). LoRA drops optimizer memory to ~7MB.
+Gradient checkpointing also required (`--gradient_checkpointing`).
 
-Excluding LTR seed sessions (shuffle_seed=42, first 2000): keeps the LTR booster
-leak-free when we retrain it on v8-based features.
+Why not nomic-embed (8192-tok) or bge-base (512-tok, no prefix): both caused
+`kIOGPUCommandBufferCallbackErrorOutOfMemory` on backward pass regardless of batch size
+or gradient checkpointing. Root cause unclear (likely nomic-bert architecture triggers
+Metal command buffer fragmentation). e5-base with LoRA does not reproduce this.
 
-### Files
+### Anchor format (no-truncation guarantee)
 
-- `scripts/train/build_twotower_v8_data.py` (new) — derived from v7 data builder:
-  - All TRAIN sessions, max 3 turns each, exclude seed 2000
-  - Pool-aware hard negatives (import pool helpers from inference script or inline)
-  - Output: `data/twotower_v8/{train,valid}.jsonl`
-- `scripts/train/train_twotower_qwen.py` (reuse, same base model)
-- `scripts/inference/build_twotower_index.py` (reuse)
+Data builder (`build_twotower_v8_data.py`) loads the E5 tokenizer and builds each
+anchor greedily:
+
+1. Core (always included, ~60-70 tokens): `query: {latest_user}` + goal + type +
+   culture + age/country
+2. Last 4 played tracks (full text with tags), most recent first — each added only if
+   it fits within 510 remaining tokens
+3. Last 3 prior text turns (user+assistant), most recent first — added only if budget
+   remains
+
+User request is always first, so if any truncation occurs (5% of samples have core
+>510 tokens) it hits distant history, never the request.
+
+Prefixes are baked into the JSONL: anchor starts with `query: `, positive/negatives
+start with `passage: `. The inference script receives `--tt_query_prefix "query: "`.
+
+### Training status (as of 2026-05-29)
+
+Training data: 74,377 train / 5,272 valid examples (all 15K TRAIN sessions, excluding
+2000 LTR seed sessions with `--exclude_seed 42 --exclude_n 2000`).
+
+Eval loss checkpoints (still training):
+| Step | Eval Loss |
+|---|---|
+| 500 | 0.677 |
+| 1000 | 0.645 |
+| 1500 | 0.632 |
+| 2000 | 0.626 |
+
+Consistently improving. Training at 16s/step (gradient checkpointing, batch_size=16,
+grad_accum=4, effective batch 64). Expected finish: ~1.5h from step 2000.
+
+### Scripts
+
+- `scripts/train/build_twotower_v8_data.py` — E5 data builder with tokenizer-aware
+  greedy anchor construction and no-truncation guarantee
+- `scripts/train/train_twotower_lora.py` — LoRA trainer for XLM-R family; merges
+  adapters on save so output is a vanilla SentenceTransformer
+- `scripts/train/build_twotower_index.py` — add `--doc_prefix "passage: "` flag
+- `scripts/inference/run_inference_fusion_recall_expansion.py` — add
+  `--tt_query_prefix "query: " --tt_text_turns 3 --tt_hist_turns 4`
 
 ### Commands
 
 ```bash
-# 1. Build training data
+# 1. Build training data (already done: data/twotower_v8/)
 python scripts/train/build_twotower_v8_data.py \
-  --out_dir data/twotower_v8 \
-  --hard_negs 3 --max_turns_per_session 3 \
-  --exclude_seed 42 --exclude_n 2000
+  --out_dir data/twotower_v8 --hard_negs 5 \
+  --exclude_n 2000 --exclude_seed 42
 
-# 2. Train
-python scripts/train/train_twotower_qwen.py \
-  --base_model sentence-transformers/all-MiniLM-L6-v2 \
-  --data_dir data/twotower_v8 \
-  --out_dir models/twotower_v8 \
-  --epochs 2 --lr 2e-5 --batch_size 32 --warmup_steps 200
+# 2. Train (in progress: models/twotower_v8/)
+source .venv/bin/activate && python scripts/train/train_twotower_lora.py \
+  --data_dir data/twotower_v8 --out_dir models/twotower_v8 \
+  --epochs 2 --batch_size 16 --grad_accum 4 \
+  --lr 1e-4 --warmup_steps 200 --gradient_checkpointing
 
-# 3. Build index
-python scripts/inference/build_twotower_index.py \
-  --model models/twotower_v8/final \
-  --out cache/twotower_v8
+# 3. Build index (after training completes)
+source .venv/bin/activate && python scripts/train/build_twotower_index.py \
+  --model models/twotower_v8/final --out_dir cache/twotower_v8 \
+  --doc_prefix "passage: " --batch_size 32
 
-# 4. Dev inference (Phase B pool + Phase B reg booster, just swap TT index)
+# 4. Quick eval with existing LTR (old LTR weights, TT features will be miscalibrated
+#    but gives a first-pass signal on whether recall improved)
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
 python scripts/inference/run_inference_fusion_recall_expansion.py \
-  --tid phase_c_tt8 \
+  --split test --tid phase_c_tt8_oldltr \
   --tt_model models/twotower_v8/final --tt_index cache/twotower_v8 \
+  --tt_query_prefix "query: " --tt_text_turns 3 --tt_hist_turns 4 \
   --tt_pool 2000 --artist_expansion --last_nn_k 100 --last_nn_src 2 \
   --bm25_missing_floor 0.05 \
   --qwen_pool 500 --cf_pool 200 --session_mean_k 100 \
   --cooccur_table cache/cooccur/next_song_leakfree.npz --cooccur_ks 300,150,50 \
   --ltr_model models/ltr/ltr_phase_b_reg_nl31_lr0p08.txt
 
-python scripts/inference/evaluate_local.py --pred exp/inference/devset/phase_c_tt8.json
+python scripts/inference/evaluate_local.py \
+  --pred exp/inference/devset/phase_c_tt8_oldltr.json
+
+# 5. Retrain LTR on v8 features (only if step 4 shows promise)
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+python scripts/inference/run_inference_fusion_recall_expansion.py \
+  --split train --sessions 2000 --shuffle_seed 42 \
+  --tid phase_c_ltr_features \
+  --tt_model models/twotower_v8/final --tt_index cache/twotower_v8 \
+  --tt_query_prefix "query: " --tt_text_turns 3 --tt_hist_turns 4 \
+  --tt_pool 2000 --artist_expansion --last_nn_k 100 --last_nn_src 2 \
+  --bm25_missing_floor 0.05 \
+  --qwen_pool 500 --cf_pool 200 --session_mean_k 100 \
+  --cooccur_table cache/cooccur/next_song_leakfree.npz --cooccur_ks 300,150,50 \
+  --write_features exp/analysis/ltr_phase_c_train_features.npz
+
+python scripts/train/train_ltr_lightgbm.py \
+  --features exp/analysis/ltr_phase_c_train_features.npz \
+  --out models/ltr/ltr_phase_c_nl31_lr0p08.txt \
+  --n_folds 5 --num_leaves 31 --lr 0.08 --num_iter 1000 --early_stop 75 \
+  --lambda_l2 0.1 --min_sum_hessian 0.1 --path_smooth 1.0 \
+  --feature_fraction 0.8 --bagging_fraction 0.8 --truncation_level 30
 ```
 
 ### Gate
 
-- Pool recall (v8) > 0.830 AND dev nDCG@20 > 0.1653 → retrain LTR on v8 features,
-  re-evaluate.
-- Pool recall flat or worse → recall ceiling is a model-architecture constraint; accept
-  83% and focus elsewhere.
-
-### Cost
-
-~1 h data build + ~45 min training + ~40 min index build + ~35 min dev inference = ~3 h.
+- Pool recall (v8) > 0.830 AND dev nDCG@20 > 0.1653 → retrain LTR on v8 features.
+- If old LTR + v8 shows recall improvement but nDCG is flat: retrain LTR before
+  concluding (old LTR was calibrated on v6 `tt_cos`/`tt_rank_sig` distributions).
+- If pool recall is flat: the recall ceiling is a model-architecture constraint;
+  accept 83% and focus elsewhere.
 
 ---
 
