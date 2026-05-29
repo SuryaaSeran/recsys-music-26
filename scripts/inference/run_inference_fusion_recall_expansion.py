@@ -417,8 +417,25 @@ if args.ltr_model:
     ltr_booster = _lgb_preload.Booster(model_file=args.ltr_model)
     n_booster_feats = ltr_booster.num_feature()
     print(f"Loaded LTR booster: {args.ltr_model}  ({n_booster_feats} features, FEATURE_COLS has {len(FEATURE_COLS)})")
-    assert n_booster_feats <= len(FEATURE_COLS), \
-        f"booster expects {n_booster_feats} features but FEATURE_COLS only has {len(FEATURE_COLS)}"
+    _LGB_POLY_PAIRS = [
+        ("tt_cos",            "bm25_signal",    "tt_x_bm25"),
+        ("tt_rank_sig",       "bm25_origin",    "ttrank_x_bm25orig"),
+        ("tt_cos",            "tt_rank_sig",    "tt_x_ttrank"),
+        ("qm_cos",            "bm25_signal",    "qm_x_bm25"),
+        ("artist_sig",        "artist_origin",  "artist_x_orig"),
+        ("nn_sig",            "tt_cos",         "nn_x_tt"),
+        ("collab_rank_sig",   "collab_score",   "collab_rank_x_score"),
+        ("popularity",        "tt_cos",         "pop_x_tt"),
+        ("popularity",        "bm25_signal",    "pop_x_bm25"),
+        ("tag_overlap_count", "bm25_signal",    "tagoverlap_x_bm25"),
+        ("tag_overlap_count", "tt_cos",         "tagoverlap_x_tt"),
+        ("cf_dist_to_last",   "cf_cos",         "cfdist_x_cfcos"),
+        ("n_sources",         "tt_cos",         "nsrc_x_tt"),
+        ("popularity_pctile", "tt_cos",         "poppctile_x_tt"),
+    ]
+    _lgb_use_poly = n_booster_feats > len(FEATURE_COLS)
+    assert n_booster_feats <= len(FEATURE_COLS) + len(_LGB_POLY_PAIRS), \
+        f"booster expects {n_booster_feats} features but max expandable is {len(FEATURE_COLS) + len(_LGB_POLY_PAIRS)}"
 
 # ── Neural LTR model (PyTorch MLP) ───────────────────────────────────────────
 _ltr_neural_model  = None
@@ -1019,7 +1036,17 @@ for item in tqdm(sessions, desc="Sessions"):
                 turn_counter[0] += 1
 
         if ltr_booster is not None and feat is not None:
-            total_arr = ltr_booster.predict(feat[:, :n_booster_feats]).astype(np.float32)
+            lgb_feat = feat
+            if _lgb_use_poly:
+                _cidx = {n: i for i, n in enumerate(FEATURE_COLS)}
+                _extras = []
+                for _fa, _fb, _ in _LGB_POLY_PAIRS:
+                    _ia, _ib = _cidx.get(_fa), _cidx.get(_fb)
+                    if _ia is not None and _ib is not None:
+                        _extras.append(lgb_feat[:, _ia] * lgb_feat[:, _ib])
+                if _extras:
+                    lgb_feat = np.hstack([lgb_feat] + [c[:, None] for c in _extras]).astype(np.float32)
+            total_arr = ltr_booster.predict(lgb_feat[:, :n_booster_feats]).astype(np.float32)
 
         if _ltr_neural_model is not None and feat is not None:
             import torch as _torch

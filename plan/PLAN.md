@@ -16,17 +16,17 @@ Quick path for a new session:
 
 ## Active phase
 
-- **Phase 10: TT v8 — larger context window + LoRA** — [07_ranking_calibration.md](07_ranking_calibration.md)
-  Phase B concluded (0.1653, reg booster). TT v8 replaces all-MiniLM-L6-v2 (256-tok)
-  with intfloat/multilingual-e5-base (512-tok, LoRA r=16) and richer tokenizer-aware
-  anchors. Training in progress (eval loss 0.677→0.626 across 4 checkpoints, 2026-05-29).
-  After training: build index, quick eval with old LTR, then retrain LTR on v8 features.
-  Gate: pool recall > 0.830 AND dev nDCG@20 > 0.1653.
+- **Phase D: Feature engineering v2 + TT v8 re-dump** — [08_feature_engineering_v2.md](08_feature_engineering_v2.md)
+  Phase D Track 1 done (0.1684, 39-feat LTR on TT v6). TT v8 index built (2026-05-29).
+  Next: re-dump 39 features with TT v8 embeddings, retrain LTR, full eval.
+  Gate: dev nDCG@20 > 0.1684.
 
 ## Score ladder (full 1000-session dev nDCG@20)
 
 ```
-0.1653  Phase B pool (tt_pool=2000) + 29-feat reg LTR nl31 lr0.08 (l2+hessian+path_smooth) <- current best (2026-05-28)
+0.1684  Phase D pool (tt_pool=2000, TT v6) + 39-feat LTR nl31 lr0.08       <- current best (2026-05-29)
+0.1678  Phase D pool + 39+14-feat poly LTR nl31 lr0.08                      (2026-05-29, baseline wins)
+0.1653  Phase B pool (tt_pool=2000) + 29-feat reg LTR nl31 lr0.08 (l2+hessian+path_smooth) (2026-05-28)
 0.1646  Phase A pool (tt_pool=1000) + 27-feat LTR nl31 lr0.08, 2000 train sessions           (2026-05-27)
 0.1609  v6 fusion + expansion + LTR LambdaMART nl31 lr0.08 (train-only)           (2026-05-15 LTR v3)
 0.1601  v6 fusion + expansion + LTR LambdaMART nl63 lr0.05 (train-only)           (2026-05-11 LTR v2)

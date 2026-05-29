@@ -2,35 +2,49 @@
 
 Live snapshot. Update only when full 1000-session dev nDCG@20 strictly beats this.
 
-## Best (as of 2026-05-28, Phase B reg LTR)
+## Best (as of 2026-05-29, Phase D 39-feat LTR)
 
-- **Dev nDCG@20: 0.1653**
-- **Hit@20: (not counted)**
-- nDCG@1 0.0556  |  nDCG@10 0.1428  |  catalog_div 0.5144  |  lex_div 0.2073
-- Script: `scripts/inference/run_inference_fusion_recall_expansion.py` with Phase B flags (`--tt_pool 2000`)
-- Run id: `phase_b_reg_fulldev` (`exp/inference/devset/phase_b_reg_fulldev.json`)
-- Booster: `models/ltr/ltr_phase_b_reg_nl31_lr0p08.txt` (LightGBM LambdaMART,
-  77 trees, 29 features, num_leaves=31, lr=0.08, lambda_l2=0.1,
+- **Dev nDCG@20: 0.1684**
+- nDCG@1 0.0599  |  nDCG@10 0.1464  |  catalog_div 0.5159  |  lex_div 0.2086
+- Script: `scripts/inference/run_inference_fusion_recall_expansion.py` with Phase D flags (`--tt_pool 2000`)
+- Run id: `phase_d_baseline_dev1000` (`exp/inference/devset/phase_d_baseline_dev1000.json`)
+- Booster: `models/ltr/ltr_phase_d_nl31_lr0p08.txt` (LightGBM LambdaMART,
+  39 features, num_leaves=31, lr=0.08, lambda_l2=0.1,
   min_sum_hessian=0.1, path_smooth=1.0, feature_fraction=0.8,
-  bagging_fraction=0.8, truncation_level=30) trained on 2000 random TRAIN-split
-  sessions (`--shuffle_seed 42`). 5-fold CV ndcg@20 on train = 0.3725
-  (std 0.0036). No dev-set leakage. Co-occurrence table uses
-  `next_song_leakfree.npz` (excludes the same 2000 LTR training sessions).
-- One-line reason it beat prior best: regularization (l2 + min_sum_hessian +
-  path_smooth) on the Phase B pool=2000 29-feature booster recovered ~14 more
-  gold tracks into the top-20 on the golden-200 holdout (0.1582 -> 0.1595) and
-  +0.0007 on full dev. Pool recall is unchanged (LTR only reranks); the gain is
-  pure ordering. The two new features (popularity, track_year): popularity has
-  real training gain (26086, rank 7/29) but track_year is marginal (1813).
-  Plain Phase B (no reg) was flat at golden 0.1580; regularization is what
-  moved it.
+  bagging_fraction=0.8, truncation_level=30, mean_iter=81) trained on 2000 random
+  TRAIN-split sessions (`--shuffle_seed 42`). 5-fold CV ndcg@20 = 0.3752
+  (std=0.0045). No dev-set leakage.
+- One-line reason it beat prior best: 10 new Phase D features (n_sources is
+  dominant at gain 497k -- multi-source retrieval agreement) + pool recall lifted
+  from 83.03% to 87.21% (+4.2pp). Poly variant (39+14 interactions) scored 0.1678
+  -- baseline wins.
+
+### New features vs Phase B (39 vs 29)
+
+| Feature | Gain | Note |
+|---|---|---|
+| `n_sources` | 497,487 | Count of retrieval sources that agreed on candidate -- dominant |
+| `tt_rank_sig` | 151,416 | (existing, #2) |
+| `tt_cos` | 84,283 | (existing, #3) |
+| `cf_cos` | 73,924 | (existing, #4) |
+| `popularity_pctile` | 19,719 | NEW -- normalized rank percentile, better than raw |
+| `turn_number` | 6,737 | NEW |
+| `cf_dist_to_recent_mean` | 4,495 | NEW |
+| `cf_dist_to_last` | 3,461 | NEW |
+| `tag_overlap_count` | 1,614 | NEW |
+| `query_len_tokens` | 1,266 | NEW |
+| `years_since_release` | 924 | NEW |
+| `history_len` | 754 | NEW -- replaces binary cold_user (which is now zero-importance) |
+| `goal_category` | 228 | NEW |
+
+Zero-importance (can be pruned): `nn_origin`, `cold_user`, `qm_only`.
 
 ### Retrieval pool
 
 ```
 BM25@500
 + artist expansion (popularity-sorted catalog, --artist_cap 50)
-+ TT-v6@1000
++ TT-v6@2000
 + last-track-NN@100 in TT space (last_nn_src=2)
 + Qwen-meta global top-500
 + CF global top-200 (warm users only)
@@ -38,88 +52,62 @@ BM25@500
 + co-occurrence top-300/150/50 (last 3 played tracks, leakfree table)
 ```
 
-Mean deduped pool size: ~2550 (vs ~1450 before Phase A).
-Pool recall: 0.8303 (vs 0.808 before).
+Pool recall: 0.8721 (up from 0.8303 in Phase B).
 
-### Rescore (LTR booster, replaces linear sum)
-
-27-feature LambdaMART booster. Top feature gains (training data):
-```
-tt_rank_sig          323159
-tt_cos               184164
-cf_cos                91930
-nn_sig                53752
-bm25_signal           36987
-dist_to_recent_mean   35394
-artist_sig            29710
-dist_to_last          18397
-collab_rank_sig       13942
-mean_nn_rank_sig       8991
-```
-
-Reproduction (current best):
+### Reproduction
 
 ```bash
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
 python scripts/inference/run_inference_fusion_recall_expansion.py \
-  --tid phase_b_reg_fulldev \
+  --tid phase_d_baseline_dev1000 \
   --tt_model models/twotower_v6/final --tt_index cache/twotower_v6 \
   --tt_pool 2000 --artist_expansion --last_nn_k 100 --last_nn_src 2 \
   --bm25_missing_floor 0.05 \
   --qwen_pool 500 --cf_pool 200 --session_mean_k 100 \
   --cooccur_table cache/cooccur/next_song_leakfree.npz --cooccur_ks 300,150,50 \
-  --ltr_model models/ltr/ltr_phase_b_reg_nl31_lr0p08.txt
+  --ltr_model models/ltr/ltr_phase_d_nl31_lr0p08.txt
 ```
 
-Booster retraining:
+Feature re-dump + booster retraining:
 
 ```bash
-# 1) feature dump from TRAIN sessions (29 feat, tt_pool 2000)
+# 1) feature dump from TRAIN sessions (39 feat, tt_pool 2000, TT v6)
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
 python scripts/inference/run_inference_fusion_recall_expansion.py \
-  --tid phase_b_train_features --split train --sessions 2000 --shuffle_seed 42 \
+  --tid phase_d_ltr_features --split train --sessions 2000 --shuffle_seed 42 \
   --tt_model models/twotower_v6/final --tt_index cache/twotower_v6 \
   --tt_pool 2000 --artist_expansion --last_nn_k 100 --last_nn_src 2 \
   --bm25_missing_floor 0.05 \
   --qwen_pool 500 --cf_pool 200 --session_mean_k 100 \
   --cooccur_table cache/cooccur/next_song_leakfree.npz --cooccur_ks 300,150,50 \
-  --write_features exp/analysis/ltr_phase_b_train_features.npz
+  --write_features exp/analysis/ltr_phase_d_train_features.npz
 
-# 2) train regularized LightGBM LambdaMART
+# 2) train 39-feat LightGBM LambdaMART
 python scripts/train/train_ltr_lightgbm.py \
-  --features exp/analysis/ltr_phase_b_train_features.npz \
-  --out models/ltr/ltr_phase_b_reg_nl31_lr0p08.txt \
+  --features exp/analysis/ltr_phase_d_train_features.npz \
+  --out models/ltr/ltr_phase_d_nl31_lr0p08.txt \
   --n_folds 5 --num_leaves 31 --lr 0.08 --num_iter 1000 --early_stop 75 \
   --lambda_l2 0.1 --min_sum_hessian 0.1 --path_smooth 1.0 \
   --feature_fraction 0.8 --bagging_fraction 0.8 --truncation_level 30
 ```
 
+### Blind safety check
+
+Pool-1000 (tt_pool=1000) golden-200 nDCG@20 = **0.1609** -- fails gate vs Phase A
+(0.1646). Same pattern as Phase B: gains are pool-size-dependent. Use Phase A
+pool config for blind submissions until v8 re-dump + retrain resolves this.
+
 ### Tested on Blind A
 
-**NOTE: Phase B retrieval (v06) hurt blind score (0.37 -> 0.30 nDCG@20 on organizer
-leaderboard) despite +0.0007 on dev.** Reverting to Phase A retrieval for blind
-submissions. Hypothesis: the extra TT pool (tt_pool 2000 vs 1000) and two new features
-(popularity, track_year) overfit to dev-distribution patterns that do not generalise
-to the blind sessions. Phase A pool is the safe blind baseline until pool recall on
-blind sessions is independently verified.
-
-**Recommended blind config: Phase A retrieval + Gemma-3-12b with reasoning lines (v07).**
-
-Response generation via Gemma-3-12b native API (`/api/v1/chat`,
-`generate_responses_lmstudio.py --native_api`). Prompt updated 2026-05-28 to require
-3-5 sentences including 1-2 closing sentences of overall prediction reasoning (what
-combination of user preferences, session history, and track metadata made this the
-top prediction).
+Not yet tested. Recommended blind config remains Phase A retrieval until TT v8
+re-dump + LTR retrain on v8 features confirms gains hold at pool-1000.
 
 | Version | Blind nDCG@20 | Dev nDCG@20 | Retrieval | Response | Track named |
 |---|---:|---:|---|---|---:|
 | **v07** | TBD | 0.1646 | Phase A pool + LTR nl31 lr0.08 (27 feat) | Gemma-3-12b + reasoning lines | TBD |
 | v06 | 0.30 | 0.1653 | Phase B pool (tt_pool=2000) + 29-feat reg LTR | Gemma-3-12b | 76/80 |
-| v05 | — | 0.1646 | Phase A pool + LTR nl31 lr0.08 | Gemma-4-e4b local | 9/80 |
+| v05 | — | 0.1646 | same | Gemma-4-e4b local | 9/80 |
 | v04 | 0.37 | 0.1646 | Phase A pool + LTR nl31 lr0.08 | DeepSeek V4 Flash | 73/80 |
-
-Active zip: `exp/inference/blind_a/submission/submission.zip` (v07 once built).
-Submission index: `exp/inference/blind_a/submissions/README.md`
 
 ## Evaluation standard
 
@@ -142,32 +130,6 @@ Source: `music-crs-evaluator/exp/scores/devset/{random,popularity,llama1b_bm25_d
 | Popularity          | 0.0005 | 0.0018 | 0.0024 | 0.0004 | 0.0000 |
 | LLaMA-1B + BM25     | 0.0098 | 0.0627 | 0.0815 | 0.3795 | 0.2558 |
 
-LLaMA-1B + BM25 is the organizer's reference retrieval baseline.
-
-## Current system vs baselines (official metrics)
-
-| System | nDCG@1 | nDCG@10 | nDCG@20 | Catalog div. | Lexical div. | Hit@20 |
-|---|---:|---:|---:|---:|---:|---:|
-| Random                                                               | 0.0000 | 0.0001 | 0.0001 | 0.9652 | 0.0000 | 0.1% |
-| Popularity                                                           | 0.0005 | 0.0018 | 0.0024 | 0.0004 | 0.0000 | 0.6% |
-| LLaMA-1B + BM25 (organizer)                                          | 0.0098 | 0.0627 | 0.0815 | 0.3795 | 0.2558 | — |
-| Our BM25 floor (name+artist+album)                                   | —      | —      | 0.0861 | —      | —      | 21.9% |
-| Our BM25 + tag_list + seen exclusion                                 | —      | —      | 0.1313 | —      | —      | 27.4% |
-| Our TT-v3 fusion (pool=500, w=0.7)                                   | —      | —      | 0.1418 | —      | —      | 29.8% |
-| Our v6 fusion v13_tuned (BM25@500 only)                              | —      | —      | 0.1519 | —      | —      | 31.5% |
-| Our v6 fusion + expansion (artist + TT@1000 + NN@100), v13 wts       | 0.0551 | 0.1328 | 0.1533 | 0.5119 | 0.1844 | 31.7% |
-| Our v6 fusion + expansion + LTR LambdaMART v2 (nl63 lr0.05)          | 0.0525 | 0.1373 | 0.1601 | 0.5677 | 0.2026 | 34.0% |
-| **Our v6 fusion + expansion + LTR LambdaMART v3 (nl31 lr0.08)**      | **0.0534** | **0.1377** | **0.1609** | **0.5645** | **0.2030** | **—** |
-
-Notes:
-- Our current best (0.1533 nDCG@20) is **+0.0718 over the strongest organizer
-  baseline** (LLaMA-1B + BM25, 0.0815) — roughly 88% relative improvement.
-- Catalog diversity 0.512 (we recommend ~51% of the 47,071-track catalog overall)
-  vs LLaMA-1B + BM25 at 0.380. Higher coverage is better here.
-- Lexical diversity 0.184 vs LLaMA-1B + BM25 at 0.256. Our template responses
-  are less varied; addressing this is a response-generation problem, not
-  retrieval, and is out of scope for the current phase.
-
 ## Response generation
 
 Two paths are used depending on the run target.
@@ -180,68 +142,22 @@ Two paths are used depending on the run target.
 response = f'I recommend "{name}" by {artist} based on your request.'
 ```
 
-`name` and `artist` are taken from the top-1 predicted track's metadata. This
-is intentionally cheap; the dev evaluator does not score response quality.
 Lexical diversity (Distinct-2) on this template scores ~0.18 on the official
-evaluator -- enough to confirm the path works end-to-end, but well below the
-LLaMA-1B + BM25 baseline at 0.256.
+evaluator -- below the LLaMA-1B + BM25 baseline at 0.256.
 
 ### Blind (post-process step)
 
 For blind submissions, `scripts/inference/generate_responses_blind.py` rewrites
-each turn's response with an LLM. Pipeline:
-
-1. Load the prediction JSON (template responses from the dev path).
-2. Load Qwen via `mlx-lm` from `models/qwen_sid_patched` (local copy of a
-   Qwen-family instruct checkpoint).
-3. For each turn, build a chat prompt with:
-   - System: "You are a friendly music recommendation assistant. Give a brief
-     (2-3 sentence) recommendation that references the user's request and
-     explains why the top track fits."
-   - Last 4 turns of conversation history. Played-music turns are converted to
-     `assistant: I recommend "<name>" by <artist>.` so the model sees what
-     was already recommended.
-   - Current user query.
-   - A trailing user turn that lists the top-3 recommended tracks (name,
-     artist, first 5 tags) and asks for a short response about the top track.
-4. Generate with `max_tokens=120` on the patched Qwen.
-5. On empty output or generation exception, fall back to the dev template.
-
-This step replaces only `predicted_response`; `predicted_track_ids` is
-preserved exactly from the retrieval step, so nDCG is unchanged.
-
-Reproduction:
-
-```bash
-python scripts/inference/generate_responses_blind.py \
-    --pred exp/inference/blind_a/<blind_id>.json \
-    --max_tokens 120 \
-    --dataset talkpl-ai/TalkPlayData-Challenge-Blind-A
-# writes <blind_id>_qwen.json next to the input.
-```
-
-Limitations:
-
-- Devset is never scored on response quality locally, so the LLM rewrite is
-  not applied there in the standard flow. To measure lexical/personalisation
-  judge scores on the devset, the same script can be pointed at a devset
-  prediction file via `--dataset talkpl-ai/TalkPlayData-Challenge-Dataset
-  --split test` (with the dev-side `session_map`).
-- The patched checkpoint at `models/qwen_sid_patched` is not in this repo
-  (gitignored); regenerate from the base Qwen-Instruct if missing.
-- No LLM-as-Judge tuning has been done yet; raising the lexical/diversity
-  numbers is a separate workstream that does not interact with retrieval.
+each turn's response with an LLM. Active model: Gemma-3-12b via LM Studio native
+API (`generate_responses_lmstudio.py --native_api`). Prompt updated 2026-05-28.
 
 ## Previous bests
 
 | Date | nDCG@20 | Pool | Rescore | Note |
 |---|---|---|---|---|
-| 2026-05-27 | 0.1646 | + cooccur + CF + session-mean (Phase A pool) | LTR Phase A (nl31 lr0.08, 27 feat) | Prior best. `models/ltr/ltr_phase_a_nl31_lr0p08.txt`, tt_pool 1000. Plain Phase B (pool 2000, +pop/year, no reg) was flat at golden 0.1580. |
+| 2026-05-28 | 0.1653 | Phase B pool (tt_pool=2000) | LTR Phase B reg (nl31 lr0.08, 29 feat) | `models/ltr/ltr_phase_b_reg_nl31_lr0p08.txt`. Poly variant 0.1678 also tested today but baseline wins. |
+| 2026-05-27 | 0.1646 | Phase A pool (tt_pool=1000) | LTR Phase A (nl31 lr0.08, 27 feat) | `models/ltr/ltr_phase_a_nl31_lr0p08.txt`. |
 | 2026-05-24 | 0.1609 | BM25@500 + artist + TT@1000 + NN@100 | LTR v3 (nl31 lr0.08, 73 trees, 15 feat) | `models/ltr/sweep/ltr_nl31_lr0p08.txt`. |
-| 2026-05-15 | 0.1601 | BM25@500 + artist + TT@1000 + NN@100 | LTR v2 (nl63 lr0.05, 44 trees) | LambdaMART on TRAIN features; `models/ltr/ltr_v2_train.txt`. |
-| 2026-05-11 | 0.1533 | BM25@500 + artist + TT@1000 + NN@100 | v13_tuned linear | Pool expansion (NN@100) over BM25-only pool, same weights. |
-| 2026-05-05 | 0.1519 | BM25@500 only | v13_tuned weights | Prior best. Blind file: `blind_a_fusion_v13_tuned_qwen.json`. |
-| 2026-05-04 | 0.1518 | BM25@500 + artist + TT-v6@1000 | v13_tuned + floor=0.05 | Expansion pool without NN; same weights. |
-| 2026-04-30 | 0.1473 | BM25@500 | v6 fusion (precursor to v13) |  |
-| 2026-04-25 | 0.1418 | BM25@500 | TT-v3 + w=0.7 | First two-tower production. |
-| 2026-04-15 | 0.1313 | BM25@500 | BM25 only + tag + seen exclusion | BM25 ceiling. |
+| 2026-05-15 | 0.1601 | BM25@500 + artist + TT@1000 + NN@100 | LTR v2 (nl63 lr0.05, 44 trees) | `models/ltr/ltr_v2_train.txt`. |
+| 2026-05-11 | 0.1533 | BM25@500 + artist + TT@1000 + NN@100 | v13_tuned linear | Pool expansion (NN@100) over BM25-only pool. |
+| 2026-05-05 | 0.1519 | BM25@500 only | v13_tuned weights | Blind file: `blind_a_fusion_v13_tuned_qwen.json`. |

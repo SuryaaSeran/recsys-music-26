@@ -5,15 +5,14 @@
 Beat dev nDCG@20 0.1653 and blind nDCG@20 0.37 through feature engineering,
 training improvements, and response generation. Deadline: June 30, 2026.
 
-## Current State
+## Current State (updated 2026-05-29)
 
-- Dev nDCG@20: 0.1653 (29-feat Phase B reg LTR)
-- Blind nDCG@20: 0.37 (Phase A pool, v04 submission with DeepSeek responses)
-- Pool recall: 83.03% (~17% of gold tracks unreachable)
-- Catalog diversity: 0.5144 (vs organizer baseline 0.3795)
-- Lexical diversity: 0.2073 (vs organizer baseline 0.2558 -- we are WORSE)
-- LLM-as-Judge: not measured (template responses only on dev)
-- TT v8 LoRA training in progress (Phase C, orthogonal)
+- Dev nDCG@20: **0.1684** (39-feat Phase D LTR, TT v6, tt_pool=2000)
+- Pool recall: 87.21% (up from 83.03%)
+- Blind nDCG@20: 0.37 (Phase A pool -- Phase D not yet blind-tested)
+- Catalog diversity: 0.5159 | Lexical diversity: 0.2086
+- TT v8 index built. TT v8 with old LTR: 0.1635 (below gate -- needs v8 LTR retrain)
+- Next: re-dump 39 features with TT v8, retrain LTR, full eval
 
 ## Key Constraints
 
@@ -27,43 +26,58 @@ training improvements, and response generation. Deadline: June 30, 2026.
 
 ---
 
-## Track 1: LTR Feature Engineering (IN PROGRESS — feature dump running, 2026-05-29)
+## Track 1: LTR Feature Engineering (DONE, 2026-05-29)
 
-### New Features (10, total 39)
+### Results
 
-| Feature | Type | Range | Why |
-|---|---|---|---|
-| `n_sources` | count | [1, 7] | Multi-source agreement = confidence |
-| `turn_number` | position | [1, 8] | Early vs late turn ranking behavior |
-| `history_len` | count | [0, 7] | Graduated cold-start (replaces binary cold_user) |
-| `popularity_pctile` | normalized | [0, 1] | Stable rank-percentile (replaces raw popularity) |
-| `years_since_release` | derived | [0, 126] | Inverted year with NaN for missing |
-| `tag_overlap_count` | lexical | [0, 12] | Explicit genre/mood match vs query |
-| `query_len_tokens` | proxy | [1, 100+] | Query specificity |
-| `cf_dist_to_last` | CF cosine | [-1, 1] | Behavioral similarity to last track |
-| `cf_dist_to_recent_mean` | CF cosine | [-1, 1] | Behavioral trajectory |
-| `goal_category` | categorical | int | Session goal type |
-
-### Fixes to existing features
-
-- `popularity`: NaN for missing (was 0.0, confused LightGBM)
-- `track_year`: NaN for missing (was 0.0)
-- CF distance arrays: now computed for all users (track-track, not user-dependent)
+- Baseline 39-feat: golden-200 0.1641, full-dev **0.1684** (beats Phase B 0.1653)
+- Poly 39+14-feat: golden-200 0.1614, full-dev 0.1678 (worse than baseline -- dropped)
+- Pool recall: 87.21% (up from 83.03%)
+- Pool-1000 blind safety: 0.1609 (fails vs Phase A 0.1646 -- same pattern as Phase B)
+- Winner: `models/ltr/ltr_phase_d_nl31_lr0p08.txt`
+- Top feature: `n_sources` (gain 497k, 3x second place `tt_rank_sig`)
+- Zero-importance: `nn_origin`, `cold_user`, `qm_only`
 
 ### Steps
 
 1. [done] Code changes to inference script + LTR trainer
-2. [running] Dump features from TRAIN sessions (2000, seed 42) — task bad22pik1
-3. [ ] Train LTR baseline: 39 features, same regularization as Phase B
-4. [ ] Train LTR + soft_labels (free experiment)
-5. [ ] Train LTR + poly_feats (14 interaction features)
-6. [ ] Train LTR + soft_labels + poly_feats
-7. [ ] Evaluate all 4 variants on golden-200, promote best to full 1000-session dev
-8. [ ] Feature importance analysis: flag overfitting risks (CV fold stability)
+2. [done] Dump features from TRAIN sessions (2000, seed 42)
+3. [done] Train LTR baseline: 39 features -- CV nDCG@20 0.3752, full-dev 0.1684
+4. [skip] soft_labels -- re-dump required, deferred to v8 cycle
+5. [done] Train LTR + poly_feats -- full-dev 0.1678, baseline wins
+6. [skip] soft_labels + poly_feats -- deferred
+7. [done] Evaluate on golden-200 + full dev, promote baseline
+8. [done] Feature importance -- see CURRENT_BEST_ITERATION.md
 
-After Track 1 LTR is settled, run MMR lambda sweep (0.3, 0.5, 0.7, 0.9) on
-golden-200 (Track 6). Also eval best LTR on Phase A pool (tt_pool=1000) for
-blind safety (Track 4, step 1).
+## Track 1b: TT v8 + 39-feat LTR (IN PROGRESS)
+
+TT v8 (multilingual-e5-base 512-tok, LoRA r=16) index built at `cache/twotower_v8`.
+TT v8 with old Phase B LTR: 0.1635 (below Phase D 0.1684 -- LTR not calibrated to v8).
+Need to retrain LTR on v8 embeddings.
+
+### Steps
+
+1. [done] Build TT v8 index
+2. [done] Quick eval with old LTR: 0.1635 (expected, distribution shift)
+3. [running] Re-dump 39 features with TT v8 embeddings
+4. [ ] Retrain LTR baseline on v8 features
+5. [ ] Golden-200 eval + full dev eval
+6. [ ] Gate: dev nDCG@20 > 0.1684
+
+```bash
+# Re-dump command (running)
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+python scripts/inference/run_inference_fusion_recall_expansion.py \
+  --tid phase_d_v8_ltr_features --split train --sessions 2000 --shuffle_seed 42 \
+  --tt_model models/twotower_v8/final --tt_index cache/twotower_v8 \
+  --tt_query_prefix "query: " --tt_text_turns 3 --tt_hist_turns 4 \
+  --tt_pool 2000 --artist_expansion --last_nn_k 100 --last_nn_src 2 \
+  --bm25_missing_floor 0.05 \
+  --qwen_pool 500 --cf_pool 200 --session_mean_k 100 \
+  --cooccur_table cache/cooccur/next_song_leakfree.npz --cooccur_ks 300,150,50 \
+  --write_features exp/analysis/ltr_phase_d_v8_train_features.npz \
+  2>&1 | tee /tmp/phase_d_v8_dump.log
+```
 
 ---
 
