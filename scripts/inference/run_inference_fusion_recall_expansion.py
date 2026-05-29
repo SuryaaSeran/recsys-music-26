@@ -180,13 +180,7 @@ for _rank, (_p, _tid) in enumerate(_pop_vals):
 del _pop_vals
 print(f"Popularity percentile lookup: {len(popularity_pctile):,} tracks")
 
-# Goal category integer encoding — pre-assigned sorted so codes are stable across runs.
-# 0 is reserved for unknown/missing.
-_all_goal_cats = sorted({
-    item.get("conversation_goal", {}).get("category", "")
-    for item in sessions
-} - {""})
-GOAL_CATEGORY_MAP: dict[str, int] = {cat: i + 1 for i, cat in enumerate(_all_goal_cats)}
+# Goal category integer encoding — built after sessions load (see below sessions assignment)
 
 # Artist -> tracks dictionary (lowercased, capped, deterministic order)
 artist_to_tids: dict[str, list[str]] = {}
@@ -347,6 +341,14 @@ if args.session_ids_file:
 elif args.sessions > 0:
     sessions = sessions[:args.sessions]
 print(f"Using split={args.split}  n_sessions={len(sessions)}  shuffle_seed={args.shuffle_seed}")
+
+# Goal category integer encoding — sorted for deterministic codes across any session ordering.
+# 0 is reserved for unknown/missing.
+_all_goal_cats = sorted({
+    item.get("conversation_goal", {}).get("category", "")
+    for item in sessions
+} - {""})
+GOAL_CATEGORY_MAP: dict[str, int] = {cat: i + 1 for i, cat in enumerate(_all_goal_cats)}
 
 print(
     f"Running {len(sessions)} sessions  "
