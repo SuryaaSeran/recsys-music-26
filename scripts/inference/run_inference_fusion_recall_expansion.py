@@ -86,6 +86,12 @@ parser.add_argument("--tt_pool",       type=int,   default=100,
                     help="Add TT global top-K to the pool. 0=disabled.")
 parser.add_argument("--qwen_pool",     type=int,   default=0,
                     help="Add Qwen-meta global top-K to the pool. 0=disabled.")
+parser.add_argument("--ql_pool",       type=int,   default=0,
+                    help="Add Qwen-lyrics global top-K to the pool. 0=disabled. "
+                         "Rescues tracks described by lyrics/mood that BM25 misses (~6.7%% of BM25 misses at top-500).")
+parser.add_argument("--bm25_sharp_pool", type=int, default=0,
+                    help="Add a second BM25 retrieval using only latest_user+goal (no track history) top-K. "
+                         "Targets mood/vibe turns where history text dilutes query keywords. 0=disabled.")
 parser.add_argument("--cf_pool",       type=int,   default=0,
                     help="Add CF global top-K to the pool (warm users only). 0=disabled.")
 parser.add_argument("--bm25_missing_floor", type=float, default=0.05,
@@ -579,7 +585,7 @@ for item in tqdm(sessions, desc="Sessions"):
         # full-index dot products (used for both expansion and scoring)
         tt_all   = tt_embs        @ tt_emb
         qm_all   = qwen_meta_embs @ qwen_emb
-        ql_all   = (qwen_lyrics_embs @ qwen_emb) if args.w_qwen_lyrics > 0 else None
+        ql_all   = (qwen_lyrics_embs @ qwen_emb) if (args.w_qwen_lyrics > 0 or args.ql_pool > 0) else None
         clap_all = clap_embs      @ clap_emb
         cf_all   = (cf_track_embs @ user_emb) if user_emb is not None else None
 
@@ -602,10 +608,25 @@ for item in tqdm(sessions, desc="Sessions"):
                 if src_label == "qm" and tid not in qm_rank_map:
                     qm_rank_map[tid] = rank
 
-        add_topk(tt_all,   tt_ids,         args.tt_pool, "tt")
+        add_topk(tt_all,   tt_ids,         args.tt_pool,  "tt")
         add_topk(qm_all,   qwen_meta_ids,  args.qwen_pool, "qm")
+        add_topk(ql_all,   qwen_lyrics_ids, args.ql_pool,  "ql")
         if cf_all is not None:
             add_topk(cf_all, cf_track_ids,  args.cf_pool, "cf")
+
+        # Sharp BM25: re-query with only latest_user + goal (no track history).
+        # Targets mood/vibe queries where track history text dilutes specific mood keywords.
+        if args.bm25_sharp_pool > 0:
+            bm25_sharp_query = " ".join(p for p in [latest_user, goal] if p)
+            if bm25_sharp_query.strip():
+                sharp_k = args.bm25_sharp_pool + len(seen) * 3
+                sharp_tids, _ = retrieve_bm25(bm25_sharp_query, topk=sharp_k)
+                sharp_filtered = [t for t in sharp_tids if t not in seen][:args.bm25_sharp_pool]
+                for rank, tid in enumerate(sharp_filtered):
+                    if tid not in cands_set:
+                        cands.append(tid); cands_set.add(tid)
+                        sources[tid] = set()
+                    sources[tid].add("bm25_sharp")
 
         # Artist expansion
         if args.artist_expansion:
