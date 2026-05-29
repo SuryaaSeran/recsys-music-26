@@ -180,9 +180,13 @@ for _rank, (_p, _tid) in enumerate(_pop_vals):
 del _pop_vals
 print(f"Popularity percentile lookup: {len(popularity_pctile):,} tracks")
 
-# Goal category integer encoding (deterministic)
-GOAL_CATEGORY_MAP: dict[str, int] = {}
-_goal_cat_counter = [1]  # mutable; 0 reserved for unknown/missing
+# Goal category integer encoding — pre-assigned sorted so codes are stable across runs.
+# 0 is reserved for unknown/missing.
+_all_goal_cats = sorted({
+    item.get("conversation_goal", {}).get("category", "")
+    for item in sessions
+} - {""})
+GOAL_CATEGORY_MAP: dict[str, int] = {cat: i + 1 for i, cat in enumerate(_all_goal_cats)}
 
 # Artist -> tracks dictionary (lowercased, capped, deterministic order)
 artist_to_tids: dict[str, list[str]] = {}
@@ -465,9 +469,6 @@ for item in tqdm(sessions, desc="Sessions"):
     goal        = item.get("conversation_goal", {}).get("listener_goal", "")
     culture     = item.get("user_profile", {}).get("preferred_musical_culture", "")
     _goal_cat   = item.get("conversation_goal", {}).get("category", "")
-    if _goal_cat and _goal_cat not in GOAL_CATEGORY_MAP:
-        GOAL_CATEGORY_MAP[_goal_cat] = _goal_cat_counter[0]
-        _goal_cat_counter[0] += 1
     goal_category_int = float(GOAL_CATEGORY_MAP.get(_goal_cat, 0))
     conversations = item["conversations"]
 
@@ -618,7 +619,7 @@ for item in tqdm(sessions, desc="Sessions"):
         # Targets mood/vibe queries where track history text dilutes specific mood keywords.
         if args.bm25_sharp_pool > 0:
             bm25_sharp_query = " ".join(p for p in [latest_user, goal] if p)
-            if bm25_sharp_query.strip():
+            if bm25_sharp_query:
                 sharp_k = args.bm25_sharp_pool + len(seen) * 3
                 sharp_tids, _ = retrieve_bm25(bm25_sharp_query, topk=sharp_k)
                 sharp_filtered = [t for t in sharp_tids if t not in seen][:args.bm25_sharp_pool]
@@ -756,23 +757,23 @@ for item in tqdm(sessions, desc="Sessions"):
                 dist_to_last_arr = tt_embs @ tt_embs[last_idx]
         dist_to_mean_arr = (tt_embs @ mean_session_vec) if mean_session_vec is not None else None
 
-        # CF-space distance arrays (Phase D features)
-        # Note: these use track-track CF embeddings (always available), not user CF
-        # embeddings. So they work for all users, not just warm ones.
-        cf_dist_to_last_arr = None
-        cf_dist_to_mean_arr = None
+        # CF-space reference vectors for Phase D distance features.
+        # Stored as unit vectors; per-candidate similarity computed inline (dot product
+        # with one row) instead of materialising full (47K,) arrays that are ~47x wasteful
+        # given a typical ~1K candidate pool.
+        cf_last_vec = None
+        cf_mean_unit_vec = None
         if music_history:
             last_cf_idx = cf_track_id2idx.get(music_history[-1])
             if last_cf_idx is not None:
-                cf_dist_to_last_arr = cf_track_embs @ cf_track_embs[last_cf_idx]
-            # mean of recent tracks in CF space
+                cf_last_vec = cf_track_embs[last_cf_idx]
             cf_hist_idxs = [cf_track_id2idx.get(t) for t in music_history[-args.session_mean_n:]]
             cf_hist_idxs = [i for i in cf_hist_idxs if i is not None]
             if cf_hist_idxs:
                 cf_mean_vec = cf_track_embs[cf_hist_idxs].mean(axis=0)
                 cf_mean_norm = np.linalg.norm(cf_mean_vec)
                 if cf_mean_norm > 1e-8:
-                    cf_dist_to_mean_arr = cf_track_embs @ (cf_mean_vec / cf_mean_norm)
+                    cf_mean_unit_vec = cf_mean_vec / cf_mean_norm
 
         # Tag overlap: precompute set of lowered query words for tag matching
         _bm25_query_words = set(bm25_query.lower().split())
@@ -886,14 +887,14 @@ for item in tqdm(sessions, desc="Sessions"):
                 _tag_overlap_f = float(sum(1 for t in _tags if t.lower() in _bm25_query_words))
                 _cf_dist_last_f = 0.0
                 _cf_dist_mean_f = 0.0
-                if cf_dist_to_last_arr is not None:
+                if cf_last_vec is not None or cf_mean_unit_vec is not None:
                     _cf_idx = cf_track_id2idx.get(tid)
                     if _cf_idx is not None:
-                        _cf_dist_last_f = float(cf_dist_to_last_arr[_cf_idx])
-                if cf_dist_to_mean_arr is not None:
-                    _cf_idx = cf_track_id2idx.get(tid)
-                    if _cf_idx is not None:
-                        _cf_dist_mean_f = float(cf_dist_to_mean_arr[_cf_idx])
+                        _cf_row = cf_track_embs[_cf_idx]
+                        if cf_last_vec is not None:
+                            _cf_dist_last_f = float(_cf_row @ cf_last_vec)
+                        if cf_mean_unit_vec is not None:
+                            _cf_dist_mean_f = float(_cf_row @ cf_mean_unit_vec)
                 feat[i] = (
                     float(tt_all[idx_tt])   if idx_tt is not None else 0.0,
                     float(qm_all[idx_qm])   if idx_qm is not None else 0.0,
