@@ -27,7 +27,7 @@ training improvements, and response generation. Deadline: June 30, 2026.
 
 ---
 
-## Track 1: LTR Feature Engineering (IMPLEMENTED, needs eval)
+## Track 1: LTR Feature Engineering (IN PROGRESS — feature dump running, 2026-05-29)
 
 ### New Features (10, total 39)
 
@@ -53,57 +53,73 @@ training improvements, and response generation. Deadline: June 30, 2026.
 ### Steps
 
 1. [done] Code changes to inference script + LTR trainer
-2. [ ] Dump features from TRAIN sessions (2000, seed 42) with new 39-feature schema
+2. [running] Dump features from TRAIN sessions (2000, seed 42) — task bad22pik1
 3. [ ] Train LTR baseline: 39 features, same regularization as Phase B
-4. [ ] Train LTR + soft_labels (already implemented, free experiment)
-5. [ ] Train LTR + poly_feats (14 interaction features, already implemented)
+4. [ ] Train LTR + soft_labels (free experiment)
+5. [ ] Train LTR + poly_feats (14 interaction features)
 6. [ ] Train LTR + soft_labels + poly_feats
 7. [ ] Evaluate all 4 variants on golden-200, promote best to full 1000-session dev
-8. [ ] Feature importance analysis: flag overfitting risks
+8. [ ] Feature importance analysis: flag overfitting risks (CV fold stability)
+
+After Track 1 LTR is settled, run MMR lambda sweep (0.3, 0.5, 0.7, 0.9) on
+golden-200 (Track 6). Also eval best LTR on Phase A pool (tt_pool=1000) for
+blind safety (Track 4, step 1).
 
 ---
 
-## Track 2: Recall Improvement (ANALYSIS NEEDED)
+## Track 2: Recall Improvement (2a + 2b IMPLEMENTED, 2026-05-29)
 
 Pool recall is 83.03%. The 17% miss rate is split into:
 - ~12% "soft unreachable": gold exists in some signal's top-5000 but not in our pool config
 - ~5% "truly unreachable": gold not in any signal's top-5000 at all
 
-### Ideas to close the soft-unreachable gap
+### Implemented
 
-**2a. BM25 query sharpening for tag-heavy turns**
-The current BM25 query concatenates goal + culture + last 4 tracks + last 4 text turns.
-For mood/vibe queries ("something chill for studying"), the track history text dilutes
-the mood keywords. A second BM25 query using only the latest user message + goal
-(no history) would rescue tracks that match mood but not history.
-- Expected lift: +1-2% recall on mood/lyrics buckets
-- Cost: one extra BM25 call per turn (~negligible)
+**2a. BM25 sharp query — `--bm25_sharp_pool N`** [DONE, commit f89c9cf]
+Second BM25 retrieval using only `latest_user + goal` (no track history, no text turns).
+Targets mood/vibe turns where history text dilutes mood keywords.
+Expected lift: +1-2% recall on mood/lyrics buckets. Cost: one extra BM25 call per turn.
 
-**2b. Qwen-lyrics pool expansion**
-Qwen-lyrics currently only contributes a scoring signal (ql_cos), not pool candidates.
-Audit shows it rescues 6.7% of BM25 misses at top-500. Adding top-200 Qwen-lyrics
-candidates to the pool would lift recall for lyrics-described tracks.
-- Expected lift: +1-2% recall
-- Cost: ~200 extra candidates per turn
+**2b. Qwen-lyrics pool expansion — `--ql_pool N`** [DONE, commit f89c9cf]
+Qwen-lyrics was scoring-only; now also expands the candidate pool. `ql_all` was already
+computed when `w_qwen_lyrics > 0`; now also triggered when `ql_pool > 0`. Audit shows
+6.7% of BM25 misses rescued at top-500.
+Expected lift: +1-2% recall. Cost: ~N extra candidates per turn.
 
-**2c. Tag-based retrieval (new signal)**
-Build a tag-matching retrieval source: for each candidate, compute Jaccard similarity
-between the conversation's extracted tags/genres and the candidate's tag_list. Add
-top-100 tag-matched tracks to pool. This targets the "user described a genre but
-used different words than the track metadata" gap.
+Suggested values to test: `--ql_pool 200 --bm25_sharp_pool 200`.
+Both use `bm25_missing_floor` for fusion scoring, consistent with other pool sources.
+
+### Not yet implemented
+
+**2c. Tag-based retrieval**
+Jaccard similarity between conversation tags and candidate `tag_list`. Targets "user
+described a genre with different words than the metadata" gap.
 
 **2d. Multi-query TT**
-Encode two TT queries per turn: (1) the current full query, (2) a "what came before"
-query using only the last 2 played tracks. Union top-K from each. Targets
-history-driven turns where the user says little but the trajectory is informative.
+Two TT queries per turn: current full query + "what came before" (last 2 played tracks
+only). Targets history-driven turns where the user says little.
 
 ### Steps
 
-1. [ ] Run recall gap analysis on current Phase D features (may have improved with v8)
-2. [ ] Implement and test 2a (dual BM25 query)
-3. [ ] Implement and test 2b (Qwen-lyrics pool)
-4. [ ] Evaluate recall lift vs pool size tradeoff
-5. [ ] Integrate winning sources into production pipeline
+1. [ ] Run recall audit: compare current pool vs `+ql_pool 200 +bm25_sharp_pool 200`
+       on golden-200. Measure: pool recall %, mean pool size, nDCG@20 with old LTR.
+2. [ ] If either source lifts recall: integrate into production eval command
+3. [ ] Consider 2c/2d only if pool recall still below 0.85 after 2a+2b
+
+```bash
+# Recall audit command (golden-200, ~7 min)
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+python scripts/inference/run_inference_fusion_recall_expansion.py \
+  --tid phase_d_recall_audit \
+  --session_ids_file plan/GOLDEN_HOLDOUT_SESSIONS.json \
+  --tt_model models/twotower_v6/final --tt_index cache/twotower_v6 \
+  --tt_pool 2000 --ql_pool 200 --bm25_sharp_pool 200 \
+  --artist_expansion --last_nn_k 100 --last_nn_src 2 \
+  --bm25_missing_floor 0.05 \
+  --qwen_pool 500 --cf_pool 200 --session_mean_k 100 \
+  --cooccur_table cache/cooccur/next_song_leakfree.npz --cooccur_ks 300,150,50 \
+  --ltr_model models/ltr/ltr_phase_b_reg_nl31_lr0p08.txt
+```
 
 ---
 
@@ -192,21 +208,43 @@ importance across folds are overfitting candidates.
 
 ---
 
-## Track 5: TT v8 Integration (BLOCKED on training completion)
+## Track 5: TT v8 Integration (TRAINING ~COMPLETE, 2026-05-29)
 
-Phase C (TT v8 LoRA, multilingual-e5-base, 512-token context) is training.
-When it completes, all features need to be re-dumped because:
-- tt_cos and tt_rank_sig distributions will change
-- dist_to_last and dist_to_recent_mean are in TT space
-- The pool itself changes (different tracks enter via TT expansion)
+Phase C (TT v8 LoRA, multilingual-e5-base, 512-token context) is at step ~2165/2326.
+Eval loss: 0.677→0.645→0.632→0.626 (all checkpoints improving). ETA: ~30 min.
+Model: `models/twotower_v8/final/` (after merge_and_unload, vanilla SentenceTransformer).
+Index will be: `cache/twotower_v8/` (shape 47071×768, `passage: ` prefix on docs).
 
-### Steps (after v8 training completes)
+When TT v8 finishes, all TT-derived features need re-dumping:
+- `tt_cos`, `tt_rank_sig` distributions change (768-dim e5-base vs 384-dim MiniLM)
+- `dist_to_last`, `dist_to_recent_mean` are in TT space
+- Pool composition changes (different tracks enter via TT expansion)
+- `cf_dist_to_last`, `cf_dist_to_mean` are independent (CF space, unchanged)
 
-1. [ ] Build v8 index
-2. [ ] Quick eval with old LTR (direction signal only)
-3. [ ] Dump 39-feature set with v8 TT embeddings
-4. [ ] Train new LTR on v8 features
-5. [ ] Full dev eval; compare vs v6-based LTR
+### Steps (auto-executing via cron job 3ac6ae3f)
+
+1. [auto] Build v8 index: `build_twotower_index.py --doc_prefix "passage: " --batch_size 32`
+2. [auto] Quick eval with old 29-feat LTR + `--tt_query_prefix "query: " --tt_text_turns 3 --tt_hist_turns 4`
+          (miscalibrated TT features, but gives recall signal)
+3. [ ] Dump 39-feature set with v8 TT embeddings (same 2000 TRAIN sessions, seed 42)
+4. [ ] Train new LTR on v8 39-feature dump (all 4 variants: baseline, soft, poly, both)
+5. [ ] Full dev eval + recall audit; compare vs v6-based results
+
+```bash
+# Step 3: v8 39-feature dump
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+python scripts/inference/run_inference_fusion_recall_expansion.py \
+  --tid phase_c_ltr_features_v8 \
+  --split train --sessions 2000 --shuffle_seed 42 \
+  --tt_model models/twotower_v8/final --tt_index cache/twotower_v8 \
+  --tt_query_prefix "query: " --tt_text_turns 3 --tt_hist_turns 4 \
+  --tt_pool 2000 --ql_pool 200 --bm25_sharp_pool 200 \
+  --artist_expansion --last_nn_k 100 --last_nn_src 2 \
+  --bm25_missing_floor 0.05 \
+  --qwen_pool 500 --cf_pool 200 --session_mean_k 100 \
+  --cooccur_table cache/cooccur/next_song_leakfree.npz --cooccur_ks 300,150,50 \
+  --write_features exp/analysis/ltr_phase_c_v8_train_features.npz
+```
 
 ---
 
