@@ -102,12 +102,17 @@ pool config for blind submissions until v8 re-dump + retrain resolves this.
 Not yet tested. Recommended blind config remains Phase A retrieval until TT v8
 re-dump + LTR retrain on v8 features confirms gains hold at pool-1000.
 
-| Version | Blind nDCG@20 | Dev nDCG@20 | Retrieval | Response | Track named |
-|---|---:|---:|---|---|---:|
-| **v07** | TBD | 0.1646 | Phase A pool + LTR nl31 lr0.08 (27 feat) | Gemma-3-12b + reasoning lines | TBD |
-| v06 | 0.30 | 0.1653 | Phase B pool (tt_pool=2000) + 29-feat reg LTR | Gemma-3-12b | 76/80 |
-| v05 | — | 0.1646 | same | Gemma-4-e4b local | 9/80 |
-| v04 | 0.37 | 0.1646 | Phase A pool + LTR nl31 lr0.08 | DeepSeek V4 Flash | 73/80 |
+| Version | Blind nDCG@20 | LLM Judge | Composite | Dev nDCG@20 | Retrieval | Response | Track named |
+|---|---:|---:|---:|---:|---|---|---:|
+| **v07** | **0.3164** | **4.40** | **0.4837** | **0.1684** | Phase D (tt_pool=2000) + 39-feat LTR | Gemma-3-12b native API | **78/80** |
+| v06 | 0.3000 | — | — | 0.1653 | Phase B (tt_pool=2000) + 29-feat reg LTR | Gemma-3-12b | 76/80 |
+| v05 | — | — | — | 0.1646 | Phase A (tt_pool=1000) + 27-feat LTR | Gemma-4-e4b local | 9/80 |
+| v04 | 0.3709 | 1.10 | 0.2771 | 0.1646 | Phase A (tt_pool=1000) + 27-feat LTR | DeepSeek V4 Flash | 0/80 |
+
+**Key finding:** composite is dominated by LLM judge. v04 has best nDCG (0.3709) but
+judge 1.1/5 tanks composite to 0.2771. v07 wins on composite (0.4837) with judge 4.4/5
+despite weaker nDCG. Next target: Phase A pool + Gemma-3-12b responses → combine best
+retrieval with best responses. Expected composite > 0.5.
 
 ## Evaluation standard
 
