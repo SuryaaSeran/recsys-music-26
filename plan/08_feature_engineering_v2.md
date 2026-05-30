@@ -137,50 +137,59 @@ python scripts/inference/run_inference_fusion_recall_expansion.py \
 
 ---
 
-## Track 3: Response Generation (MAJOR UNTAPPED DIMENSION)
+## Track 3: Response Generation (ACTIVE)
 
-Current system uses template responses on dev:
-`I recommend "{name}" by {artist} based on your request.`
+### Blind results so far (2026-05-29)
 
-This scores:
-- Lexical diversity: 0.2073 (BELOW organizer baseline 0.2558)
-- LLM-as-Judge: not measured, but certainly poor (no personalization, no explanation)
+| Version | LexDiv | LLM Judge | Composite | Note |
+|---|---:|---:|---:|---|
+| v04 DeepSeek (generic, 0/80 named) | 0.8099 | 1.10 | 0.2771 | High diversity, zero personalization |
+| v07 Gemma-3-12b (78/80 named)      | 0.6752 | 4.40 | 0.4837 | Best composite so far |
+| v08 Phase A + Gemma-3-12b (running) | TBD | TBD | TBD | Expected: nDCG ~0.37, composite > 0.4837 |
 
-The competition explicitly scores response quality via Gemini LLM judge and Distinct-2.
-This is the biggest untapped dimension -- potentially worth as much as nDCG improvements.
+Key finding: LLM judge dominates composite. But v04 shows LexDiv 0.81 is achievable.
+Target: push Gemma LexDiv from 0.67 toward 0.80 while keeping judge ~4.4.
 
-### Ideas
+### Track 3a: Lexical Diversity Improvement (TODO)
 
-**3a. Response templates with variation**
-Replace the single template with 5-10 diverse templates that rotate based on:
-- Turn position (first turn vs follow-up)
-- Query type (specific artist vs mood vs "more like that")
-- Track metadata (genre, decade, artist popularity)
-This alone would substantially lift Distinct-2.
+Gemma-3-12b scores LexDiv 0.6752 with judge 4.4. DeepSeek scored 0.8099 with judge 1.1.
+Goal: close the LexDiv gap without sacrificing judge score.
 
-**3b. Local LLM response rewrite (dev-side)**
-Apply the same Qwen/Gemma response generation currently used only for blind submissions
-to the dev evaluation pipeline. This would let us measure and optimize response quality
-during development instead of only at blind submission time.
+**Root cause:** Gemma reuses closing phrases across sessions ("makes this the top pick",
+"was an ideal match", "was the ideal next step"). These shared bigrams reduce Distinct-2.
 
-**3c. Retrieval-grounded response generation**
-Instead of just naming the top-1 track, generate responses that reference:
-- Why the top track matches the user's stated preferences
-- What tags/genres connect the recommendation to the request
-- How the track relates to previously played tracks
-This directly targets the LLM-as-Judge personalisation dimension.
+**Ideas:**
 
-**3d. Chain-of-Thought response generation**
-README notes: "Systems that generate internally reasoned responses (even if the CoT is
-hidden) tend to score higher on explanation quality." Generate internal reasoning
-(which tracks in top-20 match which user preferences) then produce a grounded response.
+3a-1. **Forbidden closing phrases** -- extend the hard-rules banned opener list to also
+ban recurring closing patterns. Add: "makes this the top pick", "was the ideal",
+"was an ideal", "makes it an ideal", "makes this selection", "makes this an ideal",
+"ideal next step", "ideal match".
+
+3a-2. **Temperature sweep** -- test temperature 0.75 (current), 0.9, 1.0 on 20-session
+sample. Measure LexDiv and judge score. Higher temp = more varied vocab. Risk: incoherence.
+
+3a-3. **Genre/era vocabulary injection** -- add a `VOCABULARY HINT` field to the user
+message listing 3-5 genre-specific descriptors from the track's tags (e.g. "grunge:
+raw, abrasive, distorted, apathetic" or "bossa nova: lilting, airy, intimate, understated").
+Instruct the model to weave at least one into the response.
+
+3a-4. **Explicit diversity instruction** -- add to SYSTEM: "Each response must use
+vocabulary specific to this track's genre and era. Do not repeat phrases you would
+use in other recommendations."
+
+### Track 3b: Response Quality (DONE for now)
+
+Gemma-3-12b with current prompt achieves judge 4.4/5. The 13 opening style hints +
+full conversation history + played-tracks block + example in user message are working.
+No immediate changes needed unless judge score drops in v08.
 
 ### Steps
 
-1. [ ] Measure current Distinct-2 and estimate LLM-as-Judge on dev with template
-2. [ ] Implement diverse template rotation (3a) -- zero-model-cost baseline
-3. [ ] Run LLM response generation on dev set and measure Distinct-2 lift
-4. [ ] Iterate on response quality (grounding, personalization)
+1. [done] Measure blind LexDiv and judge: v07 = 0.6752 / 4.40
+2. [ ] Implement 3a-1 (forbidden closing phrases) -- cheapest, no latency cost
+3. [ ] Implement 3a-3 (vocabulary injection) -- moderate, requires tag lookup
+4. [ ] A/B test temperature: 0.75 vs 0.9 on 20-session sample, measure both metrics
+5. [ ] Target: LexDiv > 0.75 with judge >= 4.0
 
 ---
 
