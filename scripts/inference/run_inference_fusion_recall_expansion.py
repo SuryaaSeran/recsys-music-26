@@ -166,6 +166,21 @@ _FILLER = re.compile(
     r"do you have|do you know)\b",
     re.IGNORECASE,
 )
+# User intent detection patterns (proxy for goal_progress_assessment)
+_NEGATION = re.compile(
+    r"\b(not what|not quite|not really|not exactly|doesn't|don't|didn't|"
+    r"isn't|wasn't|that's not|but i(?:'m| am)|but i want|but i(?:'d| would)|"
+    r"too much|too little|wrong|different|instead|rather|no[,.]|nope|"
+    r"not the|without|less|more of a|looking for something)\b",
+    re.IGNORECASE,
+)
+_FOLLOWUP = re.compile(
+    r"\b(more like|more of|another|similar|same|again|keep|continue|"
+    r"along those lines|in that vein|that direction|like that|"
+    r"the same|one more|next|also|too)\b",
+    re.IGNORECASE,
+)
+
 def clean_query(text: str) -> str:
     return re.sub(r"\s+", " ", _FILLER.sub(" ", text)).strip()
 
@@ -389,6 +404,10 @@ FEATURE_COLS = [
     "cf_dist_to_last",      # cosine to last played track in CF space (0 for cold users)
     "cf_dist_to_recent_mean",  # cosine to mean of recent tracks in CF space (0 for cold)
     "goal_category",        # integer-encoded conversation goal category
+    # Phase D2: user intent signals (proxy for goal progress)
+    "user_has_negation",    # 1.0 if latest user msg contains correction/negation words
+    "user_has_followup",    # 1.0 if latest user msg is a continuation ("more", "another", "similar")
+    "query_track_tag_sim",  # fraction of gold candidate's tags that appear in user query (per-candidate)
 ]
 
 ltr_booster = None
@@ -798,6 +817,10 @@ for item in tqdm(sessions, desc="Sessions"):
         # Tag overlap: precompute set of lowered query words for tag matching
         _bm25_query_words = set(bm25_query.lower().split())
         _query_len = len(latest_user.split())
+        # User intent signals (Phase D2)
+        _user_has_negation = 1.0 if _NEGATION.search(latest_user) else 0.0
+        _user_has_followup = 1.0 if _FOLLOWUP.search(latest_user) else 0.0
+        _latest_user_words = set(latest_user.lower().split())
 
         if not cands:
             inference_results.append({
@@ -917,6 +940,10 @@ for item in tqdm(sessions, desc="Sessions"):
                 _yrs_since_f = float(2026 - _year) if not np.isnan(_year) else np.nan
                 _tags = _meta.get("tag_list") or []
                 _tag_overlap_f = float(sum(1 for t in _tags if t.lower() in _bm25_query_words))
+                # Per-candidate: fraction of this track's tags matching latest user message
+                _tag_query_sim_f = 0.0
+                if _tags:
+                    _tag_query_sim_f = sum(1 for t in _tags if t.lower() in _latest_user_words) / len(_tags)
                 _cf_dist_last_f = 0.0
                 _cf_dist_mean_f = 0.0
                 if cf_last_vec is not None or cf_mean_unit_vec is not None:
@@ -968,6 +995,10 @@ for item in tqdm(sessions, desc="Sessions"):
                     _cf_dist_last_f,
                     _cf_dist_mean_f,
                     goal_category_int,
+                    # Phase D2: user intent signals
+                    _user_has_negation,
+                    _user_has_followup,
+                    _tag_query_sim_f,
                 )
                 if tid == gold_tid:
                     # --progress_aware: gold tracks rated DOES_NOT_MOVE get label 0
