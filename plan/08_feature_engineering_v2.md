@@ -193,34 +193,66 @@ No immediate changes needed unless judge score drops in v08.
 
 ---
 
-## Track 4: Blind Generalization (DEFENSIVE)
+## Track 4: Blind Generalization (ACTIVE)
 
-Phase B hurt blind (0.37 -> 0.30). Understanding why is critical before adding more features.
+### What we know (2026-05-29 ablation)
 
-### Hypotheses
+Per-turn nDCG@20 on dev (1000 sessions):
 
-1. **tt_pool=2000 overfits to dev pool distribution.** Dev sessions are synthetic with
-   consistent patterns. Blind sessions may have different query distributions.
-2. **popularity feature has different distribution in blind.** Dev tracks skew popular
-   (synthetic conversations favor well-known tracks). Blind may include more long-tail.
-3. **track_year is noise.** Marginal gain (1813) in training, likely fitting to dev-specific
-   year patterns that don't transfer.
+| Turn | Phase A pool=1000, 27-feat | Phase B pool=2000, 29-feat | Phase D pool=2000, 39-feat | TT v8 pool=2000, 29-feat |
+|------|---------------------------|---------------------------|---------------------------|--------------------------|
+| T1   | 0.1865                    | 0.1910                    | **0.1948**                | 0.1888                   |
+| T2   | 0.1942                    | 0.1942                    | **0.2015**                | 0.1973                   |
+| T3   | 0.1674                    | 0.1722                    | 0.1714                    | **0.1729**               |
+| T4   | 0.1543                    | 0.1588                    | 0.1582                    | **0.1602**               |
+| T5-T8| ~0.15                     | ~0.15                     | ~0.15                     | ~0.15                    |
+| Full | 0.1646                    | 0.1653                    | **0.1684**                | 0.1635                   |
 
-### Mitigation strategies
+Key findings:
+- Phase D pool=2000 wins at T1 (+0.0083 over Phase A), T2 (+0.0073), and overall.
+  **The turn-1 weakness hypothesis is wrong** -- Phase D is better at T1 on dev.
+- TT v8 wins at T3-T4 specifically (+0.0015-0.0020 over Phase D). 512-tok window
+  helps when conversation context is richest.
+- Phase D gains are concentrated at early turns (T1-T2). Later turns all converge.
+- **The blind nDCG gap (v04 0.3709 vs v07 0.3164) is distributional shift**, not
+  a turn-position issue. Blind sessions have niche goals (album art, sonic quality,
+  specific East Coast sub-genre) that the extra TT pool can't serve well.
 
-**4a. Phase A pool with Phase D features**
-Use the safer Phase A pool (tt_pool=1000) with the new 39 features. If this beats
-0.1646 on dev, it may also beat 0.37 on blind.
+### Root cause of blind gap
 
-**4b. Feature ablation on blind**
-Systematically drop suspect features (popularity, track_year, popularity_pctile,
-goal_category) and evaluate each on dev. Features that cause dev nDCG to drop
-significantly are load-bearing; features with marginal dev impact but high blind
-risk should be dropped.
+pool=2000 adds TT candidates ranked 1001-2000 that are "dev-distribution" tracks --
+they benefit from n_sources agreement on dev-like sessions but are noise on blind
+sessions with unusual or niche queries. n_sources (dominant feature, gain 497k) is
+calibrated to dev pool composition and degrades when pool composition shifts.
 
-**4c. Cross-validation stability check**
-Compare feature importance across 5 CV folds. Features with high variance in
-importance across folds are overfitting candidates.
+### Solutions for next iteration
+
+**4a. Turn-position-aware pool sizing (LOW RISK)**
+Use `--tt_pool 1000` for T1-T2, `--tt_pool 2000` for T3+. Early turns are where
+blind overfitting is most likely (no history to anchor retrieval). Requires adding
+`--tt_pool_by_turn 1000,1000,2000,2000,2000,2000,2000,2000` flag to inference script.
+Expected: dev nDCG drop < 0.002, blind nDCG improvement toward 0.37.
+
+**4b. Goal-category stratified LTR training (MEDIUM)**
+2000 training sessions are currently random. Oversample rare goal categories
+(album art, sonic quality, era-specific) so the LTR sees more diversity. Check if
+goal_category (gain 228, lowest of new features) variance is driving overfitting.
+
+**4c. n_sources normalization (MEDIUM)**
+n_sources distribution shifts when pool config changes. Add `n_sources_norm =
+n_sources / log2(pool_size)` as a feature alongside raw n_sources. This makes the
+dominant signal scale-invariant across pool configs.
+
+**4d. Turn-1 separate model (MEDIUM)**
+Train a turn-1-only LTR on cold-start sessions. At T1, history features
+(dist_to_last, history_len, cf_dist_*) are all zero -- they add noise not signal.
+A T1-specific model with only retrieval-signal features may generalize better to
+blind cold-start turns.
+
+**4e. CV fold stability filter (LOW COST)**
+Extract per-fold feature importance from the 5-fold CV. Drop features with CV
+importance std/mean > 0.5 (high variance = overfitting). Candidate: goal_category
+(gain 228), history_len (754), years_since_release (924).
 
 ### Steps
 
