@@ -51,6 +51,15 @@ parser.add_argument("--max_tracks", type=int, default=4,
                     help="Max recent played tracks to greedily include in anchor.")
 parser.add_argument("--max_prior_turns", type=int, default=3,
                     help="Max prior text turns to greedily include in anchor (lowest priority).")
+parser.add_argument("--drop_rejected", action="store_true",
+                    help="Fully exclude turns where gold is DOES_NOT_MOVE_TOWARD_GOAL "
+                         "(instead of 60%% probabilistic drop). Keeps rejected tracks as "
+                         "negatives for later turns.")
+parser.add_argument("--more_hard_negs", type=int, default=0,
+                    help="If >0, include this many BM25 hard negatives as explicit negative "
+                         "columns (negative_1..negative_N). The trainer can use these via "
+                         "--use_hard_neg. Default 0 = same as before (negatives in JSONL "
+                         "but trainer ignores all but negative_1).")
 args = parser.parse_args()
 
 random.seed(args.seed)
@@ -205,6 +214,13 @@ def build_examples(sessions: list) -> list[dict]:
 
                 progress = progress_by_turn.get(turn_num)
                 weight = PROGRESS_WEIGHT[progress]
+
+                # --drop_rejected: skip DOES_NOT_MOVE turns entirely (but still
+                # add gold to rejected_tids for use as negatives in later turns)
+                if args.drop_rejected and progress == "DOES_NOT_MOVE_TOWARD_GOAL":
+                    music_in_history.append((gold_tid, turn_num))
+                    rejected_tids.add(gold_tid)
+                    continue
 
                 latest_user = text_in_history[-1] if text_in_history else ""
 

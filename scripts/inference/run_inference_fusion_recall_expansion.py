@@ -131,6 +131,14 @@ parser.add_argument("--write_features", default="",
 parser.add_argument("--soft_labels", action="store_true",
                     help="If set, use graded labels: 2=gold, 1=same-artist-as-gold, 0=other. "
                          "Requires label_gain=[0,1,3] in the LTR trainer. Default: binary 0/1.")
+parser.add_argument("--progress_aware", action="store_true",
+                    help="Use goal_progress_assessment from dataset. Gold tracks rated "
+                         "DOES_NOT_MOVE_TOWARD_GOAL get label=0 (treated as negatives). "
+                         "Turns with no gold in pool are always included regardless.")
+parser.add_argument("--skip_no_progress", action="store_true",
+                    help="Drop turns where gold is DOES_NOT_MOVE_TOWARD_GOAL entirely "
+                         "from the feature dump (no rows emitted). More aggressive than "
+                         "--progress_aware which keeps the turn but zeros the gold label.")
 parser.add_argument("--ltr_model", default="",
                     help="If set, score with this LightGBM booster instead of the linear fusion.")
 parser.add_argument("--ltr_neural", default="",
@@ -456,6 +464,11 @@ if args.write_provenance:
     prov_fh = open(args.write_provenance, "w")
     print(f"Writing provenance to {args.write_provenance}")
 
+# Progress-aware counters
+_progress_total_turns = 0
+_progress_rejected_turns = 0
+_progress_skipped_turns = 0
+
 # LTR feature dump buffers (concatenated at end). FEATURE_COLS defined above.
 feat_chunks: list = []
 label_chunks: list = []
@@ -472,6 +485,11 @@ for item in tqdm(sessions, desc="Sessions"):
     culture     = item.get("user_profile", {}).get("preferred_musical_culture", "")
     _goal_cat   = item.get("conversation_goal", {}).get("category", "")
     goal_category_int = float(GOAL_CATEGORY_MAP.get(_goal_cat, 0))
+    # Goal progress assessment per turn (for --progress_aware / --skip_no_progress)
+    _progress_by_turn: dict[int, str] = {}
+    if args.progress_aware or args.skip_no_progress:
+        for _a in (item.get("goal_progress_assessments") or []):
+            _progress_by_turn[_a["turn_number"]] = _a.get("goal_progress_assessment", "")
     conversations = item["conversations"]
 
     if args.blind_mode:
@@ -843,6 +861,18 @@ for item in tqdm(sessions, desc="Sessions"):
         feat = None
         if args.write_features or ltr_booster is not None:
             gold_tid = turn["content"]
+            # Check goal progress for this turn
+            _turn_progress = _progress_by_turn.get(turn_number, "")
+            _is_rejected_gold = (_turn_progress == "DOES_NOT_MOVE_TOWARD_GOAL")
+            if _progress_by_turn:
+                _progress_total_turns += 1
+                if _is_rejected_gold:
+                    _progress_rejected_turns += 1
+            # --skip_no_progress: drop the entire turn from the dump
+            if args.skip_no_progress and _is_rejected_gold and args.write_features:
+                _progress_skipped_turns += 1
+                music_history.append(turn["content"])
+                continue
             cold_user_flag = 1.0 if cf_all is None else 0.0
             n_cands_local = len(cands)
             feat = np.zeros((n_cands_local, len(FEATURE_COLS)), dtype=np.float32)
@@ -940,7 +970,11 @@ for item in tqdm(sessions, desc="Sessions"):
                     goal_category_int,
                 )
                 if tid == gold_tid:
-                    lbl[i] = 2 if args.soft_labels else 1
+                    # --progress_aware: gold tracks rated DOES_NOT_MOVE get label 0
+                    if args.progress_aware and _is_rejected_gold:
+                        lbl[i] = 0  # treat rejected gold as negative
+                    else:
+                        lbl[i] = 2 if args.soft_labels else 1
                 elif args.soft_labels and gold_artist:
                     cand_artist = ((_meta.get("artist_name") or [""])[0] or "").lower()
                     if cand_artist and cand_artist == gold_artist:
@@ -1051,3 +1085,8 @@ if args.write_features and feat_chunks:
                    "n_rows": int(X.shape[0]),
                    "turn_meta": turn_meta}, f)
     print(f"Saved features: {X.shape} -> {out}  (sidecar {sidecar})")
+    if _progress_total_turns > 0:
+        print(f"  progress_aware: {_progress_rejected_turns}/{_progress_total_turns} turns had "
+              f"DOES_NOT_MOVE_TOWARD_GOAL gold ({_progress_rejected_turns/_progress_total_turns:.1%})")
+        if _progress_skipped_turns > 0:
+            print(f"  skip_no_progress: {_progress_skipped_turns} turns dropped entirely")

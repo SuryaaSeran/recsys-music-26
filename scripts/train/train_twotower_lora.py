@@ -75,7 +75,15 @@ parser.add_argument("--logging_steps", type=int, default=100)
 args = parser.parse_args()
 
 
+parser.add_argument("--n_hard_negs", type=int, default=1,
+                    help="Number of explicit hard negatives to load from JSONL columns "
+                         "negative_1..negative_N. Only used when --use_hard_neg is set. "
+                         "SentenceTransformer MNRL uses these as additional negatives "
+                         "alongside in-batch negatives. More hard negs = harder training.")
+
+
 def load_jsonl(path: str, use_hard_neg: bool) -> list[dict]:
+    n_neg = args.n_hard_negs if use_hard_neg else 0
     rows = []
     if not os.path.exists(path):
         return rows
@@ -83,11 +91,19 @@ def load_jsonl(path: str, use_hard_neg: bool) -> list[dict]:
         for line in f:
             d = json.loads(line)
             row = {"anchor": d["anchor"], "positive": d["positive"]}
-            if use_hard_neg:
-                if d.get("negative_1", "").strip():
-                    row["negative"] = d["negative_1"]
-                else:
-                    continue
+            if n_neg > 0:
+                # Load up to n_neg explicit negatives
+                has_any = False
+                for ni in range(1, n_neg + 1):
+                    key = f"negative_{ni}"
+                    val = d.get(key, "").strip()
+                    if val:
+                        row[f"negative_{ni}"] = val
+                        has_any = True
+                    else:
+                        break  # stop at first missing negative
+                if not has_any:
+                    continue  # skip rows without any hard negatives
             rows.append(row)
     return rows
 
