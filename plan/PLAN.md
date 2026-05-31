@@ -16,16 +16,18 @@ Quick path for a new session:
 
 ## Active phase
 
-- **Phase D: Feature engineering v2 + TT v8 re-dump** — [08_feature_engineering_v2.md](08_feature_engineering_v2.md)
-  Phase D Track 1 done (0.1684, 39-feat LTR on TT v6). TT v8 index built (2026-05-29).
-  Next: re-dump 39 features with TT v8 embeddings, retrain LTR, full eval.
+- **Phase D: TT v8b + progress-aware LTR (6K sessions)** — [08_feature_engineering_v2.md](08_feature_engineering_v2.md)
+  TT v8b trained (drop_rejected + 3 hard negs). 42 features (39 Phase D + 3 user-intent proxies).
+  H1+H3 inference flags implemented. 6K session feature dump running (2026-05-30).
   Gate: dev nDCG@20 > 0.1684.
 
 ## Score ladder (full 1000-session dev nDCG@20)
 
 ```
 0.1684  Phase D pool (tt_pool=2000, TT v6) + 39-feat LTR nl31 lr0.08       <- current best (2026-05-29)
+0.1682  Phase D pool (TT v8b) + 42-feat progress-aware LTR (2K sessions)    (2026-05-30, below gate)
 0.1678  Phase D pool + 39+14-feat poly LTR nl31 lr0.08                      (2026-05-29, baseline wins)
+0.1672  Phase D pool (TT v8b) + 42-feat LTR + H1+H3                         (2026-05-30, H1+H3 hurt all-turns)
 0.1653  Phase B pool (tt_pool=2000) + 29-feat reg LTR nl31 lr0.08 (l2+hessian+path_smooth) (2026-05-28)
 0.1646  Phase A pool (tt_pool=1000) + 27-feat LTR nl31 lr0.08, 2000 train sessions           (2026-05-27)
 0.1609  v6 fusion + expansion + LTR LambdaMART nl31 lr0.08 (train-only)           (2026-05-15 LTR v3)
@@ -58,12 +60,12 @@ Quick path for a new session:
 
 Versioned folder: `exp/inference/blind_a/submissions/` (README.md inside).
 
-| Version | Dev nDCG@20 | Retrieval | Response | Status |
-|---|---:|---|---|---|
-| **v06** | **0.1653** | Phase B pool (tt_pool=2000) + 29-feat reg LTR | Gemma-3-12b native API (76/80 track named) | **recommended** |
-| v04 | 0.1646 | Phase A pool + LTR nl31 lr0.08 | DeepSeek V4 Flash (73/80 track named) | superseded |
-| v05 | 0.1646 | same | Gemma-4-e4b local (9/80 track named) | submitted, inferior responses |
+| Version | Blind nDCG@20 | LLM Judge | Composite | Dev nDCG@20 | Status |
+|---|---:|---:|---:|---:|---|
+| **v07** | **0.3164** | **4.40** | **0.4837** | 0.1684 | **current best composite** |
+| v06 | 0.3000 | — | — | 0.1653 | Phase B retrieval hurt blind |
+| v04 | 0.3709 | 1.10 | 0.2771 | 0.1646 | best nDCG, poor judge |
 
-Active submission zip: `exp/inference/blind_a/submission/submission.zip` (currently v05;
-copy v04 zip to switch). Retrieval for both: `run_inference_fusion_recall_expansion.py`
-with Phase A expansion flags + `--ltr_model models/ltr/ltr_phase_a_nl31_lr0p08.txt`.
+Key finding: composite dominated by LLM judge. v07 wins composite despite weaker nDCG.
+Next target: Phase A pool (nDCG ~0.37) + Gemma-3-12b responses (judge ~4.4) → composite > 0.5.
+Active submission zip: `exp/inference/blind_a/submission/submission.zip` (v07).

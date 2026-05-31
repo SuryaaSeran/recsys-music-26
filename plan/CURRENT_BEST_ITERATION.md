@@ -97,10 +97,27 @@ Pool-1000 (tt_pool=1000) golden-200 nDCG@20 = **0.1609** -- fails gate vs Phase 
 (0.1646). Same pattern as Phase B: gains are pool-size-dependent. Use Phase A
 pool config for blind submissions until v8 re-dump + retrain resolves this.
 
+### TT v8b trial results (2026-05-30, below gate)
+
+TT v8b trained (drop_rejected + 3 hard negs) + 42-feat progress-aware LTR. All runs below gate.
+Root cause: LTR trained on only 7,953 clean turns (43% filtered DOES_NOT_MOVE). Early stop iter=78.
+Fix in progress: 6K session dump → ~21K clean turns → retrain.
+
+| Mode | Phase D (v6, current best) | v8b + 42-feat LTR | v8b + H1+H3 |
+|---|---:|---:|---:|
+| All turns (8K, official) | **0.1684** | 0.1682 | 0.1672 |
+| MOVES only (6184) | 0.1662 | 0.1666 | 0.1665 |
+| Last turn (1K) | 0.1650 | 0.1600 | 0.1591 |
+| Last+progress (836) | 0.1731 | 0.1643 | 0.1655 |
+
+Note: H1+H3 hurt all-turns (-0.0010) but helped last+progress (+0.0012). The booster
+wasn't trained with H1+H3 active so the pool distribution mismatch hurts. Once LTR
+is trained on H1+H3-generated pools (Phase E), the all-turns drop should recover.
+
 ### Tested on Blind A
 
-Not yet tested. Recommended blind config remains Phase A retrieval until TT v8
-re-dump + LTR retrain on v8 features confirms gains hold at pool-1000.
+Not yet with v8b. Recommended blind config remains Phase A retrieval until v8b LTR
+passes gate. See `exp/inference/blind_a/submissions/README.md`.
 
 | Version | Blind nDCG@20 | LLM Judge | Composite | Dev nDCG@20 | Retrieval | Response | Track named |
 |---|---:|---:|---:|---:|---|---|---:|

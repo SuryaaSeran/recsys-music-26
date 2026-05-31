@@ -5,14 +5,29 @@
 Beat dev nDCG@20 0.1653 and blind nDCG@20 0.37 through feature engineering,
 training improvements, and response generation. Deadline: June 30, 2026.
 
-## Current State (updated 2026-05-29)
+## Current State (updated 2026-05-30)
 
-- Dev nDCG@20: **0.1684** (39-feat Phase D LTR, TT v6, tt_pool=2000)
-- Pool recall: 87.21% (up from 83.03%)
-- Blind nDCG@20: 0.37 (Phase A pool -- Phase D not yet blind-tested)
-- Catalog diversity: 0.5159 | Lexical diversity: 0.2086
-- TT v8 index built. TT v8 with old LTR: 0.1635 (below gate -- needs v8 LTR retrain)
-- Next: re-dump 39 features with TT v8, retrain LTR, full eval
+- Dev nDCG@20: **0.1684** (39-feat Phase D LTR, TT v6, tt_pool=2000) — current best
+- Blind composite: **0.4837** (v07, Gemma-3-12b, judge 4.4/5)
+- Pool recall: 87.21% on train; TT v8b gets 86.48% on dev
+- TT v8b: trained (drop_rejected, 3 hard negs), index at `cache/twotower_v8b`
+- 42 features: 39 Phase D + 3 Phase D2 (user_has_negation, user_has_followup, query_track_tag_sim)
+- H1+H3 implemented: `--use_goal_progress --rejection_drop_threshold 3 --goal_substitute_positive`
+- Evaluator: `--progress_only`, `--last_turn_only` flags added for clean signal
+- **Running now:** 6K session feature dump with TT v8b + skip_no_progress
+- Next: retrain LTR → eval all 4 modes → gate check
+
+### v8b eval results (2026-05-30, below gate)
+
+| Mode | Phase D (v6) | v8b+42feat LTR | v8b+H1+H3 | Note |
+|---|---:|---:|---:|---|
+| All turns (8K) | 0.1684 | 0.1682 | 0.1672 | gate: >0.1684 |
+| MOVES only (6184) | 0.1662 | 0.1666 | 0.1665 | clean signal |
+| Last turn (1K) | 0.1650 | 0.1600 | 0.1591 | |
+| Last+progress (836) | 0.1731 | 0.1643 | **0.1655** | H1+H3 help here |
+
+Root cause of regression: LTR trained on only 7,953 clean turns (early stop iter=78).
+Fix: 6K sessions → ~21K clean turns. Then 15K → ~53K if needed.
 
 ## Key Constraints
 
@@ -49,35 +64,116 @@ training improvements, and response generation. Deadline: June 30, 2026.
 7. [done] Evaluate on golden-200 + full dev, promote baseline
 8. [done] Feature importance -- see CURRENT_BEST_ITERATION.md
 
-## Track 1b: TT v8 + 39-feat LTR (IN PROGRESS)
+## Track 1b: TT v8b + 42-feat progress-aware LTR (ACTIVE, 2026-05-30)
 
-TT v8 (multilingual-e5-base 512-tok, LoRA r=16) index built at `cache/twotower_v8`.
-TT v8 with old Phase B LTR: 0.1635 (below Phase D 0.1684 -- LTR not calibrated to v8).
-Need to retrain LTR on v8 embeddings.
+TT v8b: multilingual-e5-base LoRA r=16, trained with `--drop_rejected` + 3 hard negs.
+42 features: 39 Phase D + 3 user-intent proxies (Phase D2).
+Progress-aware training: only MOVES_TOWARD_GOAL + None/missing turns used (`--skip_no_progress`).
+H1+H3 inference flags: seed filtering + goal-slot modulation.
 
 ### Steps
 
-1. [done] Build TT v8 index
-2. [done] Quick eval with old LTR: 0.1635 (expected, distribution shift)
-3. [running] Re-dump 39 features with TT v8 embeddings
-4. [ ] Retrain LTR baseline on v8 features
-5. [ ] Golden-200 eval + full dev eval
-6. [ ] Gate: dev nDCG@20 > 0.1684
+1. [done] Build TT v8b data with `--drop_rejected` (56,874 clean examples)
+2. [done] Train TT v8b LoRA (2 epochs, 3 hard negs, final loss 1.979)
+3. [done] Build TT v8b index (`cache/twotower_v8b`, 138MB, 47K tracks)
+4. [done] Add Phase D2 features (42 total) + H1+H3 flags to inference script
+5. [done] Add `--progress_only`, `--last_turn_only` to evaluator
+6. [done] Add all-zero group filter to LTR trainer
+7. [done] Store `cand_ids` in feature dump sidecar (enables incremental feature augmentation)
+8. [done] 2K session dump + LTR retrain — below gate (0.1682). Root cause: only 7,953 clean turns, early stop iter=78.
+9. **[running]** 6K session dump (`exp/analysis/ltr_phase_d_v8b_6k_features.npz`, ~3.3hrs)
+10. [ ] Retrain LTR on 6K features → expect ~21K clean turns, later early stopping
+11. [ ] Dev eval (4 modes) — gate: all-turns nDCG@20 > 0.1684
+12. [ ] If passes: update CURRENT_BEST_ITERATION, build blind submission
+13. [ ] If still below gate: try 15K sessions or isolate TT v8b regression
+
+### Incremental feature augmentation (for future phases)
+
+**Key insight:** if the TT model is unchanged, new features can be appended to an existing
+dump without re-running the full inference pipeline. The sidecar now stores `cand_ids` per
+turn (added 2026-05-30). Future steps for new-feature-only additions:
+1. Load existing NPZ + sidecar (with `cand_ids`)
+2. Compute only the new feature columns per candidate
+3. `np.hstack` onto existing X, update `feature_cols`, save
+
+**When re-dump IS required:** if TT model changes (all TT-derived features change), or if
+pool composition changes (H1 seed filtering changes which candidates are retrieved).
+
+### Reproduction (6K session run)
 
 ```bash
-# Re-dump command (running)
+# Feature dump (running)
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
 python scripts/inference/run_inference_fusion_recall_expansion.py \
-  --tid phase_d_v8_ltr_features --split train --sessions 2000 --shuffle_seed 42 \
-  --tt_model models/twotower_v8/final --tt_index cache/twotower_v8 \
-  --tt_query_prefix "query: " --tt_text_turns 3 --tt_hist_turns 4 \
+  --tid phase_d_v8b_6k_ltr_features \
+  --split train --sessions 6000 --shuffle_seed 42 \
+  --tt_model models/twotower_v8b/final --tt_index cache/twotower_v8b \
+  --tt_query_prefix "query: " \
   --tt_pool 2000 --artist_expansion --last_nn_k 100 --last_nn_src 2 \
   --bm25_missing_floor 0.05 \
   --qwen_pool 500 --cf_pool 200 --session_mean_k 100 \
   --cooccur_table cache/cooccur/next_song_leakfree.npz --cooccur_ks 300,150,50 \
-  --write_features exp/analysis/ltr_phase_d_v8_train_features.npz \
-  2>&1 | tee /tmp/phase_d_v8_dump.log
+  --skip_no_progress \
+  --write_features exp/analysis/ltr_phase_d_v8b_6k_features.npz
+
+# LTR retrain (after dump)
+# Sparsity note: 1 positive per ~700 candidates (0.14% rate). LambdaMART handles this
+# via pairwise gradients (700 pairs per group), NOT via scale_pos_weight/focal loss.
+# Tighter regularization vs 2K run: lambda_l2 0.1->0.5, min_data_in_leaf 20->50,
+# min_sum_hessian 0.1->0.5. Previous run early-stopped at iter=78 (overfitting signal).
+python scripts/train/train_ltr_lightgbm.py \
+  --features exp/analysis/ltr_phase_d_v8b_6k_features.npz \
+  --out models/ltr/ltr_phase_d_v8b_6k_nl31_lr0p08.txt \
+  --n_folds 5 --num_leaves 31 --lr 0.08 --num_iter 1000 --early_stop 75 \
+  --lambda_l2 0.5 --min_sum_hessian 0.5 --min_data_in_leaf 50 --path_smooth 1.0 \
+  --feature_fraction 0.8 --bagging_fraction 0.8 --truncation_level 30
+
+# Dev eval (all 4 modes)
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+python scripts/inference/run_inference_fusion_recall_expansion.py \
+  --tid phase_d_v8b_6k_dev1000 \
+  --tt_model models/twotower_v8b/final --tt_index cache/twotower_v8b \
+  --tt_query_prefix "query: " --tt_pool 2000 \
+  --artist_expansion --last_nn_k 100 --last_nn_src 2 \
+  --bm25_missing_floor 0.05 \
+  --qwen_pool 500 --cf_pool 200 --session_mean_k 100 \
+  --cooccur_table cache/cooccur/next_song_leakfree.npz --cooccur_ks 300,150,50 \
+  --ltr_model models/ltr/ltr_phase_d_v8b_6k_nl31_lr0p08.txt
 ```
+
+---
+
+## Track 1c: Phase E — Goal Progress at Inference (PLANNED)
+
+Implements Vedanth's `origin/vedanth/plan-8` proposals. Run AFTER Track 1b passes gate.
+
+### What's already done vs what's new
+
+| Change | Status |
+|---|---|
+| LTR: rejected gold label=0 (`--progress_aware` / `--skip_no_progress`) | Done |
+| TT: drop rejected turns (`--drop_rejected`) | Done |
+| Inference proxies (user_has_negation, user_has_followup, query_track_tag_sim) | Done (42 feat) |
+| H1: filter rejected tracks from NN/session-mean/BM25 seeds (`--use_goal_progress`) | **Implemented, not yet in training** |
+| H3: goal-slot modulation (`--rejection_drop_threshold`, `--goal_substitute_positive`) | **Implemented, not yet in training** |
+| H2: 4 history features (sim_to_pos/neg_hist_mean, artist_in_rejected_set, n_rejected) | Not yet |
+
+### H2 features to add (42 → 46)
+
+- `sim_to_pos_hist_mean`: TT cosine to mean embedding of MOVES_TOWARD prior tracks
+- `sim_to_neg_hist_mean`: TT cosine to mean embedding of DOES_NOT_MOVE prior tracks
+- `artist_in_rejected_set`: 1.0 if candidate artist matches any prior rejected track's artist
+- `n_rejected_in_history`: count of DOES_NOT_MOVE turns so far (clipped at 10)
+
+### Steps
+
+1. [ ] Add H2 features to FEATURE_COLS + candidate scoring loop in inference script
+2. [ ] Feature dump with H1+H3+H2 active (use `--use_goal_progress --skip_no_progress`)
+   — since H1 changes pool composition, full re-dump required (cannot use incremental augmentation)
+3. [ ] Retrain LTR on 46-feature matrix
+4. [ ] Dev eval H1+H2+H3 combined vs baseline
+5. [ ] Ablation table (rows A-F per Vedanth's plan)
+6. [ ] Gate: nDCG@20 > current best
 
 ---
 
