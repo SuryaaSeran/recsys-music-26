@@ -52,6 +52,11 @@ parser.add_argument("--truncation_level",     type=int,   default=30,
 parser.add_argument("--num_iter",             type=int,   default=1000)
 parser.add_argument("--early_stop",           type=int,   default=75)
 parser.add_argument("--seed",                 type=int,   default=42)
+parser.add_argument("--max_groups",           type=int,   default=0,
+                    help="If >0, randomly subsample to at most this many groups after "
+                         "loading. Use when X is too large to fit in RAM (e.g. 6K "
+                         "session dumps can produce 26K+ groups / 12GB+ X). "
+                         "10000 groups ~ 4.5GB X, enough to beat 2K-session underfitting.")
 parser.add_argument("--sweep",                action="store_true")
 parser.add_argument("--save_sweep_dir", default=None,
                     help="If set, save each sweep booster to this directory.")
@@ -67,15 +72,68 @@ args = parser.parse_args()
 
 print(f"Loading {args.features}...")
 data = np.load(args.features, allow_pickle=True)
-X     = data["X"].astype(np.float32)
+# Load y/group first (small: ~400MB total). Defer X until after all row filters
+# are determined — avoids loading the full 13GB+ X when --max_groups is set.
 y     = data["y"].astype(np.int32)
 group = data["group"].astype(np.int32)
 feature_cols = list(data["feature_cols"])
 n_turns      = int(group.max()) + 1
+n_rows_total = len(y)
 
-print(f"  X: {X.shape}  turns: {n_turns}  features: {len(feature_cols)}")
+print(f"  rows: {n_rows_total}  turns: {n_turns}  features: {len(feature_cols)}")
 print(f"  positives: {int(y.sum())}  pos_rate: {y.mean():.5f}  "
-      f"mean_pool: {X.shape[0]/n_turns:.1f}")
+      f"mean_pool: {n_rows_total/n_turns:.1f}")
+
+# Drop all-zero groups (turns where every candidate has label=0).
+_has_positive = np.zeros(n_turns, dtype=bool)
+for _tid in range(n_turns):
+    if y[group == _tid].max() > 0:
+        _has_positive[_tid] = True
+_row_keep = _has_positive[group]
+_dropped = n_turns - int(_has_positive.sum())
+if _dropped > 0:
+    print(f"  dropping {_dropped} all-zero groups ({100*_dropped/n_turns:.1f}% of turns) — "
+          f"no positive label (progress_aware filtered)")
+    y     = y[_row_keep]
+    group = group[_row_keep]
+    _old_ids = np.where(_has_positive)[0]
+    _id_remap = np.full(n_turns, -1, dtype=np.int32)
+    _id_remap[_old_ids] = np.arange(len(_old_ids), dtype=np.int32)
+    group = _id_remap[group]
+    n_turns = int(_has_positive.sum())
+    print(f"  after filter: turns={n_turns}  pos_rate={y.mean():.5f}")
+else:
+    _row_keep = None  # no filter needed
+
+# ── Group subsampling (--max_groups) ──────────────────────────────────────────
+if args.max_groups > 0 and n_turns > args.max_groups:
+    _rng_sub = np.random.default_rng(args.seed)
+    _keep_groups = np.sort(_rng_sub.choice(n_turns, args.max_groups, replace=False))
+    _sub_mask = np.isin(group, _keep_groups)
+    y     = y[_sub_mask]; group = group[_sub_mask]
+    _sub_remap = np.full(n_turns, -1, dtype=np.int32)
+    _sub_remap[_keep_groups] = np.arange(args.max_groups, dtype=np.int32)
+    group = _sub_remap[group]
+    n_turns = args.max_groups
+    print(f"  max_groups subsample: kept {n_turns} groups  rows={_sub_mask.sum()}  "
+          f"pos_rate={y.mean():.5f}")
+    # Build combined row mask for deferred X load
+    if _row_keep is not None:
+        _combined_mask = np.where(_row_keep)[0][_sub_mask]
+    else:
+        _combined_mask = np.where(_sub_mask)[0]
+    _load_mask = np.zeros(n_rows_total, dtype=bool)
+    _load_mask[_combined_mask] = True
+else:
+    _load_mask = _row_keep  # None means keep all, or the zero-group filter mask
+
+# ── Load X now (deferred to avoid RAM cost before filtering) ──────────────────
+print(f"  Loading X for {len(y)} rows...")
+if _load_mask is None:
+    X = data["X"].astype(np.float32)
+else:
+    X = data["X"][_load_mask].astype(np.float32)
+print(f"  X loaded: {X.shape}")
 
 # ── Soft labels ───────────────────────────────────────────────────────────────
 # With --soft_labels the dump stores 0/1/2; validate and set label_gain.
@@ -129,16 +187,28 @@ if args.poly_feats:
         print(f"  poly_feats: added {len(new_cols)} interaction columns → {len(feature_cols)} total")
 
 sidecar = Path(args.features).with_suffix(".meta.json")
-with open(sidecar) as f:
-    meta = json.load(f)
-turn_meta = meta["turn_meta"]
-assert len(turn_meta) == n_turns, f"meta/npz mismatch: {len(turn_meta)} vs {n_turns}"
-
-session_to_turns: dict[str, list[int]] = {}
-for t_idx, m in enumerate(turn_meta):
-    session_to_turns.setdefault(m["session_id"], []).append(t_idx)
-sessions = list(session_to_turns.keys())
-print(f"  sessions: {len(sessions)}")
+if sidecar.exists():
+    with open(sidecar) as f:
+        meta = json.load(f)
+    turn_meta = meta["turn_meta"]
+    # Align to all-zero group filter
+    if len(turn_meta) > n_turns and '_old_ids' in dir():
+        turn_meta = [turn_meta[i] for i in _old_ids]
+    # Align to max_groups subsample
+    if len(turn_meta) != n_turns and args.max_groups > 0 and '_keep_groups' in dir():
+        turn_meta = [turn_meta[i] for i in _keep_groups]
+    assert len(turn_meta) == n_turns, f"meta/npz mismatch: {len(turn_meta)} vs {n_turns}"
+    session_to_turns: dict[str, list[int]] = {}
+    for t_idx, m in enumerate(turn_meta):
+        session_to_turns.setdefault(m["session_id"], []).append(t_idx)
+    sessions = list(session_to_turns.keys())
+    print(f"  sessions: {len(sessions)}")
+else:
+    print(f"  WARNING: sidecar {sidecar} not found — falling back to turn-index k-fold")
+    turn_meta = [{"session_id": f"s{i}", "turn_number": 0, "gold": None}
+                 for i in range(n_turns)]
+    session_to_turns = {f"s{i}": [i] for i in range(n_turns)}
+    sessions = list(session_to_turns.keys())
 
 rng = np.random.default_rng(args.seed)
 rng.shuffle(sessions)

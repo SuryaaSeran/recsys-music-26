@@ -61,6 +61,11 @@ parser.add_argument("--blind_mode",  action="store_true",
                     help="Predict only the final music turn per session (turn_number = conversations[-1].turn_number). Use with --dataset talkpl-ai/TalkPlayData-Challenge-Blind-A.")
 parser.add_argument("--shuffle_seed", type=int, default=-1,
                     help=">=0: shuffle sessions before taking --sessions slice (deterministic).")
+parser.add_argument("--session_offset", type=int, default=0,
+                    help="Skip first N sessions after shuffle before taking --sessions slice. "
+                         "Use with --sessions to split a large dump across parallel workers: "
+                         "worker 0: --sessions 3000 --session_offset 0, "
+                         "worker 1: --sessions 3000 --session_offset 3000.")
 parser.add_argument("--tid",         default="fusion_recall_v1")
 parser.add_argument("--out_dir",     default="exp/inference/devset")
 parser.add_argument("--topk",        type=int,   default=20)
@@ -139,6 +144,17 @@ parser.add_argument("--skip_no_progress", action="store_true",
                     help="Drop turns where gold is DOES_NOT_MOVE_TOWARD_GOAL entirely "
                          "from the feature dump (no rows emitted). More aggressive than "
                          "--progress_aware which keeps the turn but zeros the gold label.")
+parser.add_argument("--use_goal_progress", action="store_true",
+                    help="H1+H3: use goal_progress_assessments at inference to filter "
+                         "rejected tracks from retrieval seeds (H1) and optionally modulate "
+                         "the goal query slot (H3). Reads goal_progress_assessments from dataset.")
+parser.add_argument("--rejection_drop_threshold", type=int, default=0,
+                    help="H3a: drop the static goal string from all query types when "
+                         "n_consecutive_rejections >= this value. 0=disabled.")
+parser.add_argument("--goal_substitute_positive", action="store_true",
+                    help="H3b: when at least one prior MOVES_TOWARD_GOAL track exists, "
+                         "substitute its name+artist into the goal slot of all query types. "
+                         "Takes precedence over --rejection_drop_threshold when a positive exists.")
 parser.add_argument("--ltr_model", default="",
                     help="If set, score with this LightGBM booster instead of the linear fusion.")
 parser.add_argument("--ltr_neural", default="",
@@ -362,7 +378,7 @@ if args.session_ids_file:
     sessions = [s for s in sessions if s["session_id"] in _sid_set]
     print(f"  session_ids_file: keeping {len(sessions)} sessions matching {args.session_ids_file}")
 elif args.sessions > 0:
-    sessions = sessions[:args.sessions]
+    sessions = sessions[args.session_offset: args.session_offset + args.sessions]
 print(f"Using split={args.split}  n_sessions={len(sessions)}  shuffle_seed={args.shuffle_seed}")
 
 # Goal category integer encoding — sorted for deterministic codes across any session ordering.
@@ -408,6 +424,11 @@ FEATURE_COLS = [
     "user_has_negation",    # 1.0 if latest user msg contains correction/negation words
     "user_has_followup",    # 1.0 if latest user msg is a continuation ("more", "another", "similar")
     "query_track_tag_sim",  # fraction of gold candidate's tags that appear in user query (per-candidate)
+    # Phase E: H2 history-based features (require --use_goal_progress; 0 otherwise)
+    "sim_to_pos_hist_mean",   # TT cosine between candidate and mean of MOVES_TOWARD prior tracks
+    "sim_to_neg_hist_mean",   # TT cosine between candidate and mean of DOES_NOT_MOVE prior tracks
+    "artist_in_rejected_set", # 1.0 if candidate artist appears in any prior DOES_NOT_MOVE track
+    "n_rejected_in_history",  # count of DOES_NOT_MOVE turns so far, clipped at 10 then /10
 ]
 
 ltr_booster = None
@@ -505,12 +526,21 @@ _progress_total_turns = 0
 _progress_rejected_turns = 0
 _progress_skipped_turns = 0
 
-# LTR feature dump buffers (concatenated at end). FEATURE_COLS defined above.
-feat_chunks: list = []
+# LTR feature dump buffers. X is written directly to a temp binary file to avoid
+# accumulating GBs of arrays in RAM — peak memory = one turn's features at a time.
+feat_chunks: list = []   # kept empty; used as sentinel only
 label_chunks: list = []
 group_chunks: list = []   # turn-index per row
 turn_meta: list = []      # one per turn: {session_id, turn_number, gold}
 turn_counter = [0]        # mutable counter for closures
+_X_tmpfile = None
+_X_tmppath = None
+_X_n_rows = [0]
+_X_n_feats = [0]
+if args.write_features:
+    import tempfile as _tempfile
+    _X_tmppath = Path(args.write_features).with_suffix(".X.tmp")
+    _X_tmpfile = open(_X_tmppath, "wb")
 total_music_turns = 0
 found_in_pool_count = 0
 
@@ -521,9 +551,9 @@ for item in tqdm(sessions, desc="Sessions"):
     culture     = item.get("user_profile", {}).get("preferred_musical_culture", "")
     _goal_cat   = item.get("conversation_goal", {}).get("category", "")
     goal_category_int = float(GOAL_CATEGORY_MAP.get(_goal_cat, 0))
-    # Goal progress assessment per turn (for --progress_aware / --skip_no_progress)
+    # Goal progress assessment per turn (for --progress_aware / --skip_no_progress / --use_goal_progress)
     _progress_by_turn: dict[int, str] = {}
-    if args.progress_aware or args.skip_no_progress:
+    if args.progress_aware or args.skip_no_progress or args.use_goal_progress:
         for _a in (item.get("goal_progress_assessments") or []):
             _progress_by_turn[_a["turn_number"]] = _a.get("goal_progress_assessment", "")
     conversations = item["conversations"]
@@ -547,6 +577,7 @@ for item in tqdm(sessions, desc="Sessions"):
     user_emb = user_cf.get(user_id)
 
     music_history: list[str] = []
+    music_history_labels: list[str] = []  # parallel to music_history; assessment per turn
     text_history:  list[str] = []
 
     for turn in conversations:
@@ -561,6 +592,7 @@ for item in tqdm(sessions, desc="Sessions"):
         # synthetic trailing music turn (content == "") triggers a prediction.
         if args.blind_mode and turn["content"]:
             music_history.append(turn["content"])
+            music_history_labels.append(_progress_by_turn.get(turn["turn_number"], ""))
             continue
 
         turn_number = turn["turn_number"]
@@ -568,35 +600,65 @@ for item in tqdm(sessions, desc="Sessions"):
 
         latest_user = text_history[-1] if text_history else ""
 
+        # H1: positive_history — seed expansion only from non-rejected prior tracks.
+        # Falls back to raw music_history when no positive exists (e.g. turn 1).
+        if args.use_goal_progress:
+            _pos_hist = [t for t, l in zip(music_history, music_history_labels)
+                         if l != "DOES_NOT_MOVE_TOWARD_GOAL"] or music_history
+        else:
+            _pos_hist = music_history
+
+        # H3: goal-slot modulation
+        _goal_for_query = goal
+        if args.use_goal_progress and music_history_labels:
+            # Most recent MOVES_TOWARD_GOAL track (for H3b substitution)
+            _most_recent_pos_tid = next(
+                (t for t, l in zip(reversed(music_history), reversed(music_history_labels))
+                 if l == "MOVES_TOWARD_GOAL"), None)
+            # Consecutive rejections from tail (for H3a drop)
+            _n_consec_rej = 0
+            for _l in reversed(music_history_labels):
+                if _l == "DOES_NOT_MOVE_TOWARD_GOAL":
+                    _n_consec_rej += 1
+                else:
+                    break
+            if args.goal_substitute_positive and _most_recent_pos_tid:
+                _prow = metadata_dict.get(_most_recent_pos_tid, {})
+                _pname = (_prow.get("track_name") or [""])[0]
+                _partist = (_prow.get("artist_name") or [""])[0]
+                _goal_for_query = f"{_pname} by {_partist}" if _pname else goal
+            elif args.rejection_drop_threshold > 0 and _n_consec_rej >= args.rejection_drop_threshold:
+                _goal_for_query = ""
+
         # tt query — compact (v6) or rich (v8+)
-        tt_parts = [latest_user, goal, culture]
+        tt_parts = [latest_user, _goal_for_query, culture]
         if args.tt_text_turns > 0:
             # Prior text turns before latest_user (user+assistant interleaved)
             for txt in text_history[-(args.tt_text_turns + 1):-1]:
                 if txt: tt_parts.append(txt)
         if args.tt_hist_turns > 2:
-            # v8+: full track text (name|artist|album|tags|year)
-            for tid in music_history[-args.tt_hist_turns:]:
+            # v8+: full track text (H1: use _pos_hist)
+            for tid in _pos_hist[-args.tt_hist_turns:]:
                 ft = get_track_text(tid)
                 if ft: tt_parts.append(ft)
         else:
-            # v6 compact: name+artist only, last 2 tracks
-            for tid in music_history[-args.tt_hist_turns:]:
+            # v6 compact: name+artist only (H1: use _pos_hist)
+            for tid in _pos_hist[-args.tt_hist_turns:]:
                 na = get_track_name_artist(tid)
                 if na: tt_parts.append(na)
         tt_query = " ".join(p for p in tt_parts if p)
 
-        # bm25 long query
-        bm25_parts = [goal, culture]
-        for tid in music_history[-args.hist_turns:]:
+        # bm25 long query (H1: use _pos_hist for track history seeds)
+        bm25_parts = [_goal_for_query, culture]
+        for tid in _pos_hist[-args.hist_turns:]:
             bm25_parts.append(get_track_text(tid))
         bm25_parts.extend(text_history[-args.text_turns:])
         bm25_query = " ".join(p for p in bm25_parts if p)
 
         # semantic query (cleaned)
         cleaned = clean_query(latest_user) or latest_user
-        sem_parts = [cleaned, goal, culture]
-        for tid in music_history[-args.sem_hist:]:
+        sem_parts = [cleaned, _goal_for_query, culture]
+        for tid in _pos_hist[-args.sem_hist:]:
             na = get_track_name_artist(tid)
             if na: sem_parts.append(na)
         semantic_query = " ".join(p for p in sem_parts if p)
@@ -711,11 +773,11 @@ for item in tqdm(sessions, desc="Sessions"):
         # If --session_nn_ks is given (e.g. "300,200,100"), each position uses its own K.
         # Otherwise --last_nn_k applies uniformly to the last --last_nn_src tracks.
         if session_nn_ks_list:
-            nn_plan = [(music_history[-(i+1)], session_nn_ks_list[i])
-                       for i in range(min(len(session_nn_ks_list), len(music_history)))
+            nn_plan = [(_pos_hist[-(i+1)], session_nn_ks_list[i])
+                       for i in range(min(len(session_nn_ks_list), len(_pos_hist)))
                        if session_nn_ks_list[i] > 0]
-        elif args.last_nn_k > 0 and music_history:
-            nn_plan = [(t, args.last_nn_k) for t in music_history[-args.last_nn_src:]]
+        elif args.last_nn_k > 0 and _pos_hist:
+            nn_plan = [(t, args.last_nn_k) for t in _pos_hist[-args.last_nn_src:]]
         else:
             nn_plan = []
 
@@ -742,8 +804,8 @@ for item in tqdm(sessions, desc="Sessions"):
 
         # Mean-session-vector NN expansion
         mean_session_vec = None
-        if music_history:
-            hist_idxs = [tt_id2idx.get(t) for t in music_history[-args.session_mean_n:]]
+        if _pos_hist:
+            hist_idxs = [tt_id2idx.get(t) for t in _pos_hist[-args.session_mean_n:]]
             hist_idxs = [i for i in hist_idxs if i is not None]
             if hist_idxs:
                 v = tt_embs[hist_idxs].mean(axis=0)
@@ -846,6 +908,7 @@ for item in tqdm(sessions, desc="Sessions"):
                 "predicted_track_ids": [], "predicted_response": "No recommendation.",
             })
             music_history.append(turn["content"])
+            music_history_labels.append(_progress_by_turn.get(turn_number, ""))
             continue
 
         # --- attrs-history (optional) ---
@@ -912,10 +975,37 @@ for item in tqdm(sessions, desc="Sessions"):
             if args.skip_no_progress and _is_rejected_gold and args.write_features:
                 _progress_skipped_turns += 1
                 music_history.append(turn["content"])
+                music_history_labels.append(_progress_by_turn.get(turn_number, ""))
                 continue
             cold_user_flag = 1.0 if cf_all is None else 0.0
             n_cands_local = len(cands)
             feat = np.zeros((n_cands_local, len(FEATURE_COLS)), dtype=np.float32)
+            # Phase E: H2 — build history-mean embeddings from labeled prior tracks
+            _pos_hist_mean_vec = None
+            _neg_hist_mean_vec = None
+            _neg_artist_set: set = set()
+            _n_rejected_hist = 0
+            if args.use_goal_progress and music_history_labels:
+                _pos_embs, _neg_embs = [], []
+                for _h_tid, _h_lbl in zip(music_history, music_history_labels):
+                    _h_idx = tt_id2idx.get(_h_tid)
+                    if _h_lbl == "MOVES_TOWARD_GOAL":
+                        if _h_idx is not None:
+                            _pos_embs.append(tt_embs[_h_idx])
+                    elif _h_lbl == "DOES_NOT_MOVE_TOWARD_GOAL":
+                        _n_rejected_hist += 1
+                        if _h_idx is not None:
+                            _neg_embs.append(tt_embs[_h_idx])
+                        _hm = metadata_dict.get(_h_tid, {})
+                        _ha = ((_hm.get("artist_name") or [""])[0] or "").lower()
+                        if _ha:
+                            _neg_artist_set.add(_ha)
+                if _pos_embs:
+                    _v = np.mean(np.stack(_pos_embs), axis=0)
+                    _pos_hist_mean_vec = _v / (np.linalg.norm(_v) + 1e-8)
+                if _neg_embs:
+                    _v = np.mean(np.stack(_neg_embs), axis=0)
+                    _neg_hist_mean_vec = _v / (np.linalg.norm(_v) + 1e-8)
             lbl  = np.zeros(n_cands_local, dtype=np.int8)
             # For soft labels: pre-compute gold artist for partial-credit assignment
             if args.soft_labels:
@@ -961,6 +1051,12 @@ for item in tqdm(sessions, desc="Sessions"):
                 _tag_query_sim_f = 0.0
                 if _tags:
                     _tag_query_sim_f = sum(1 for t in _tags if t.lower() in _latest_user_words) / len(_tags)
+                # Phase E: H2 per-candidate history features
+                _cand_artist = ((_meta.get("artist_name") or [""])[0] or "").lower()
+                _sim_pos_f = float(tt_embs[idx_tt] @ _pos_hist_mean_vec) if (idx_tt is not None and _pos_hist_mean_vec is not None) else 0.0
+                _sim_neg_f = float(tt_embs[idx_tt] @ _neg_hist_mean_vec) if (idx_tt is not None and _neg_hist_mean_vec is not None) else 0.0
+                _artist_rejected_f = 1.0 if (_cand_artist and _cand_artist in _neg_artist_set) else 0.0
+                _n_rej_norm_f = min(_n_rejected_hist, 10) / 10.0
                 _cf_dist_last_f = 0.0
                 _cf_dist_mean_f = 0.0
                 if cf_last_vec is not None or cf_mean_unit_vec is not None:
@@ -1016,6 +1112,11 @@ for item in tqdm(sessions, desc="Sessions"):
                     _user_has_negation,
                     _user_has_followup,
                     _tag_query_sim_f,
+                    # Phase E: H2 history-based features
+                    _sim_pos_f,
+                    _sim_neg_f,
+                    _artist_rejected_f,
+                    _n_rej_norm_f,
                 )
                 if tid == gold_tid:
                     # --progress_aware: gold tracks rated DOES_NOT_MOVE get label 0
@@ -1028,11 +1129,15 @@ for item in tqdm(sessions, desc="Sessions"):
                     if cand_artist and cand_artist == gold_artist:
                         lbl[i] = 1  # same artist, partial credit
             if args.write_features:
-                feat_chunks.append(feat)
+                _feat_f32 = feat.astype(np.float32)
+                _X_tmpfile.write(_feat_f32.tobytes())  # stream directly to disk
+                _X_n_rows[0] += n_cands_local
+                _X_n_feats[0] = _feat_f32.shape[1]
                 label_chunks.append(lbl)
                 group_chunks.append(np.full(n_cands_local, turn_counter[0], dtype=np.int32))
                 turn_meta.append({"session_id": session_id, "turn_number": turn_number,
-                                  "gold": gold_tid, "n_cands": n_cands_local})
+                                  "gold": gold_tid, "n_cands": n_cands_local,
+                                  "cand_ids": cands})
                 turn_counter[0] += 1
 
         if ltr_booster is not None and feat is not None:
@@ -1119,6 +1224,7 @@ for item in tqdm(sessions, desc="Sessions"):
             }) + "\n")
 
         music_history.append(turn["content"])
+        music_history_labels.append(_progress_by_turn.get(turn_number, ""))
 
 Path(args.out_dir).mkdir(parents=True, exist_ok=True)
 out_path = Path(args.out_dir) / f"{args.tid}.json"
@@ -1129,20 +1235,46 @@ print(f"Pool recall: {found_in_pool_count}/{total_music_turns} = {found_in_pool_
 if prov_fh is not None:
     prov_fh.close()
 
-if args.write_features and feat_chunks:
+if args.write_features and _X_n_rows[0] > 0:
+    _X_tmpfile.close()
     out = Path(args.write_features)
     out.parent.mkdir(parents=True, exist_ok=True)
-    X = np.concatenate(feat_chunks, axis=0)
+    total_rows = _X_n_rows[0]
+    n_feats    = _X_n_feats[0]
     y = np.concatenate(label_chunks, axis=0)
     g = np.concatenate(group_chunks, axis=0)
-    np.savez_compressed(out, X=X, y=y, group=g, feature_cols=np.array(FEATURE_COLS))
+    # Build NPZ by streaming X from the temp file — never holds full X in RAM.
+    # y/group/feature_cols are small (~60MB total) and concatenated normally.
+    import zipfile
+    import numpy.lib.format as _fmt
+    _CHUNK_BYTES = 64 * 1024 * 1024  # 64MB read buffer
+    with zipfile.ZipFile(str(out), "w", compression=zipfile.ZIP_STORED,
+                         allowZip64=True) as _zf:
+        with _zf.open("X.npy", "w", force_zip64=True) as _buf:
+            _hdr = {"descr": _fmt.dtype_to_descr(np.dtype("float32")),
+                    "fortran_order": False,
+                    "shape": (total_rows, n_feats)}
+            _fmt.write_array_header_2_0(_buf, _hdr)
+            with open(_X_tmppath, "rb") as _src:
+                while True:
+                    _block = _src.read(_CHUNK_BYTES)
+                    if not _block:
+                        break
+                    _buf.write(_block)
+        with _zf.open("y.npy", "w") as _buf:
+            np.save(_buf, y)
+        with _zf.open("group.npy", "w") as _buf:
+            np.save(_buf, g)
+        with _zf.open("feature_cols.npy", "w") as _buf:
+            np.save(_buf, np.array(FEATURE_COLS))
+    _X_tmppath.unlink()  # clean up temp file
     sidecar = out.with_suffix(".meta.json")
     with open(sidecar, "w") as f:
         json.dump({"feature_cols": FEATURE_COLS,
                    "n_turns": len(turn_meta),
-                   "n_rows": int(X.shape[0]),
+                   "n_rows": total_rows,
                    "turn_meta": turn_meta}, f)
-    print(f"Saved features: {X.shape} -> {out}  (sidecar {sidecar})")
+    print(f"Saved features: ({total_rows}, {n_feats}) -> {out}  (sidecar {sidecar})")
     if _progress_total_turns > 0:
         print(f"  progress_aware: {_progress_rejected_turns}/{_progress_total_turns} turns had "
               f"DOES_NOT_MOVE_TOWARD_GOAL gold ({_progress_rejected_turns/_progress_total_turns:.1%})")

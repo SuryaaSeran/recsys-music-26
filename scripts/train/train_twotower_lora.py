@@ -72,14 +72,12 @@ parser.add_argument("--max_train", type=int, default=0,
                     help="If >0, cap training set size for a quick sanity run.")
 parser.add_argument("--eval_steps", type=int, default=500)
 parser.add_argument("--logging_steps", type=int, default=100)
-args = parser.parse_args()
-
-
 parser.add_argument("--n_hard_negs", type=int, default=1,
                     help="Number of explicit hard negatives to load from JSONL columns "
                          "negative_1..negative_N. Only used when --use_hard_neg is set. "
                          "SentenceTransformer MNRL uses these as additional negatives "
                          "alongside in-batch negatives. More hard negs = harder training.")
+args = parser.parse_args()
 
 
 def load_jsonl(path: str, use_hard_neg: bool) -> list[dict]:

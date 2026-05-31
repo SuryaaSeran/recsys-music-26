@@ -9,6 +9,8 @@ duplicates.
 Usage:
     python scripts/inference/evaluate_local.py --pred exp/inference/devset/<tid>.json
     python scripts/inference/evaluate_local.py --pred ... --hit  # also print Hit@k counts
+    python scripts/inference/evaluate_local.py --pred ... --progress_only  # MOVES_TOWARD_GOAL turns only
+    python scripts/inference/evaluate_local.py --pred ... --last_turn_only  # final music turn per session only
 """
 import argparse
 import json
@@ -25,6 +27,12 @@ parser.add_argument("--hit", action="store_true",
 parser.add_argument("--strict", action="store_true", default=True,
                     help="Raise on duplicate track IDs (official behaviour). Use --no-strict to warn instead.")
 parser.add_argument("--no-strict", dest="strict", action="store_false")
+parser.add_argument("--progress_only", action="store_true", default=False,
+                    help="Only score turns where goal_progress_assessment == MOVES_TOWARD_GOAL. "
+                         "Skips turns where the gold track was rated negatively by the dataset.")
+parser.add_argument("--last_turn_only", action="store_true", default=False,
+                    help="Only score the final music turn per session. "
+                         "Matches blind evaluation format and avoids early-session noise.")
 args = parser.parse_args()
 
 
@@ -69,9 +77,25 @@ by_turn = defaultdict(lambda: {"ndcg@1": [], "ndcg@10": [], "ndcg@20": [],
 
 all_recommended = []
 all_responses = []
+skipped_no_progress = 0
+skipped_not_last = 0
 
 for item in sessions:
     session_id = item["session_id"]
+
+    # Build progress lookup for this session: turn_number -> assessment string
+    progress_by_turn: dict[int, str] = {}
+    if args.progress_only:
+        for a in (item.get("goal_progress_assessments") or []):
+            progress_by_turn[a["turn_number"]] = a.get("goal_progress_assessment", "")
+
+    # Find the last music turn number if --last_turn_only
+    last_music_turn = None
+    if args.last_turn_only:
+        for turn in item["conversations"]:
+            if turn["role"] == "music":
+                last_music_turn = turn["turn_number"]
+
     for turn in item["conversations"]:
         if turn["role"] != "music":
             continue
@@ -80,6 +104,19 @@ for item in sessions:
         key = (session_id, tnum)
         if key not in pred_lookup:
             continue
+
+        # --last_turn_only: skip all but the final music turn
+        if args.last_turn_only and tnum != last_music_turn:
+            skipped_not_last += 1
+            continue
+
+        # --progress_only: skip turns where gold was rated DOES_NOT_MOVE_TOWARD_GOAL
+        if args.progress_only:
+            assessment = progress_by_turn.get(tnum, "")
+            if assessment != "MOVES_TOWARD_GOAL":
+                skipped_no_progress += 1
+                continue
+
         pred, resp = pred_lookup[key]
 
         b = by_turn[tnum]
@@ -120,6 +157,10 @@ lex_diversity = len(bigrams) / total_bg if total_bg else 0.0
 
 total = sum(b["n"] for b in by_turn.values())
 print(f"Predictions file: {args.pred}")
+if args.progress_only:
+    print(f"Mode: MOVES_TOWARD_GOAL turns only (skipped {skipped_no_progress} non-progress turns)")
+if args.last_turn_only:
+    print(f"Mode: last turn per session only (skipped {skipped_not_last} earlier turns)")
 print(f"Total prediction points: {total}")
 print(f"nDCG@1:  {ndcg1:.4f}")
 print(f"nDCG@10: {ndcg10:.4f}")
