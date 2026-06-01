@@ -111,12 +111,12 @@ SYSTEM = (
     "3. EXPLAIN WITH EVIDENCE: Give one concrete reason from the track's metadata "
     "(year, album name, a specific tag, sonic character) that connects to the "
     "user's request. Not \"it has great vibes\" — say \"the 2007 Favourite Worst "
-    "Nightmare production\" or \"the grunge and alternative rock tags\".\n"
+    "Nightmare production\" or \"the grunge and alternative rock tags\". "
+    "Only use details that are actually in the metadata provided.\n"
     "\n"
     "4. CONNECT TO SESSION HISTORY: If the user has played tracks in this session, "
-    "draw an explicit connection. \"Since you enjoyed Nirvana's grunge energy, "
-    "this track channels a similar raw intensity.\" This is critical for "
-    "personalisation scoring.\n"
+    "draw an explicit connection — sometimes continuation, sometimes contrast. "
+    "Vary the phrasing. If no tracks have been played yet, skip this step.\n"
     "\n"
     "Close with 1-2 sentences explaining what combination of the user's preferences, "
     "their listening history, and the track's characteristics made this the top pick.\n"
@@ -127,12 +127,16 @@ SYSTEM = (
     "\n"
     "HARD RULES:\n"
     "  - 3 to 5 sentences total. No 2-liners. No 6-liners.\n"
-    "  - Plain prose. No headers, bullets, markdown, emojis, numbered lists.\n"
-    "  - No greetings (\"Hi!\"), sign-offs (\"Enjoy!\"), or filler.\n"
+    "  - Plain prose only. ZERO markdown: no asterisks (*), underscores (_), "
+    "hashes (#), or any other formatting. Write album names in plain text.\n"
+    "  - No exclamation marks.\n"
+    "  - No greetings (\"Hi!\"), sign-offs (\"Enjoy!\"), or filler (\"Wicked!\", \"Awesome!\").\n"
     "  - Do NOT start with: \"Here's\", \"Here is\", \"I recommend\", "
     "\"Based on\", \"Absolutely\", \"Great choice\", \"Check out\", "
     "\"I've got\", \"Perfect for\", \"Built for\", \"Loaded\", \"Queued\", "
-    "\"Spinning up\", \"This is\", \"These\", \"For when\", \"Threading\".\n"
+    "\"Spinning up\", \"This is\", \"These\", \"For when\", \"Threading\", "
+    "\"I've selected\", \"I have selected\", \"Let's try\", \"Let's dive\", "
+    "\"How about\", \"Let me\".\n"
     "  - Use the OPENING STYLE hint in the user message to begin your reply.\n"
     "  - NEVER invent track names, artists, lyrics, or albums. If the user "
     "named an artist not in the candidate list, reference them only as "
@@ -143,6 +147,72 @@ SYSTEM = (
     "An AI judge will evaluate your response for personalisation and explanation "
     "quality. Generic, templated responses score zero."
 )
+
+
+EXAMPLE_POOL = [
+    (
+        "User asked for \"high-energy rap to run to\"",
+        "Picking up the pace from the slower cuts you have been on, \"Power\" by "
+        "Kanye West hits with a pounded drum loop and a King Crimson sample driving "
+        "it forward. The 2010 My Beautiful Dark Twisted Fantasy production was built "
+        "for momentum, all swagger and push. It carries the defiant energy of the rap "
+        "tracks earlier in your session but tightens it for the run."
+    ),
+    (
+        "User asked for \"something for 2am, headphones on\"",
+        "Low light, a single voice — \"Nikes\" by Frank Ocean settles into exactly "
+        "that hush. The hazy pitched-vocal opening drifts before the beat arrives, "
+        "which suits the unwound late-night mood. It rewards an empty room."
+    ),
+    (
+        "User asked for \"90s East Coast, raw, no polish\"",
+        "\"Protect Ya Neck\" by Wu-Tang Clan is that rawness with nothing smoothed over. "
+        "The 1993 Enter the Wu-Tang grit, traded verses over a stripped sample, is the "
+        "blueprint for the boom-bap you keep returning to. After the cleaner cuts earlier, "
+        "it swings the session back toward the dusty end you favor."
+    ),
+    (
+        "User asked for \"a slow Sunday-morning feel\"",
+        "\"Harvest Moon\" by Neil Young eases right into it. The 1992 recording leans "
+        "on brushed drums and a drifting harmonica, warm and unhurried. Nothing about "
+        "it asks for your full attention, which is the point."
+    ),
+    (
+        "User asked for \"heavier, angrier than the last one\"",
+        "\"Bulls on Parade\" by Rage Against the Machine answers with a scraping "
+        "siren-like guitar and a rhythm section that never lets up. The 1996 Evil "
+        "Empire cut pairs funk-metal groove with real fury, lining up with the harder "
+        "edge you have been steering toward."
+    ),
+    (
+        "User asked for \"melancholic like Nils Frahm but with a little groove\"",
+        "\"An Ending (Ascent)\" by Brian Eno lands in the same quiet territory as "
+        "Frahm — synth pads that hang rather than resolve, patient and still. The "
+        "ambient and minimalism tags fit the breath-held quality you described. It "
+        "sits as a companion to the slow piano played earlier rather than a departure."
+    ),
+    (
+        "User asked for \"something that sounds like a film score, building tension\"",
+        "\"Experience\" by Ludovico Einaudi starts with a single piano note and "
+        "pulls in strings until the room fills. The neoclassical tag and the 2013 "
+        "In a Time Lapse album both point toward exactly that cinematic architecture. "
+        "After the more restrained pieces you played, the gradual build here earns it."
+    ),
+    (
+        "User asked for \"upbeat, danceable, something from the 80s\"",
+        "\"Don't You Want Me\" by The Human League hits that mark — synthesizers, "
+        "a four-on-the-floor pulse, and a narrative push that keeps the floor moving. "
+        "The 1981 Dare production still sounds polished decades later, which is exactly "
+        "the era you were pointing toward."
+    ),
+]
+
+
+def example_for(session_id: str, turn_number: int) -> str:
+    key = f"ex__{session_id}__{turn_number}".encode()
+    idx = int.from_bytes(hashlib.sha256(key).digest()[:4], "big") % len(EXAMPLE_POOL)
+    situation, response = EXAMPLE_POOL[idx]
+    return f"{situation}:\n{response}"
 
 
 # Opening "shapes" — picked deterministically per (session,turn) for diversity.
@@ -285,10 +355,12 @@ def build_user(session: dict, turn_number: int, top_tids: list[str]) -> str:
 
 def call_lmstudio(system: str, user: str) -> str:
     if args.native_api:
+        # Native API only supports temperature (not max_tokens) — use OpenAI-compat for full control
         payload = {
             "model": args.model,
             "system_prompt": system,
             "input": user,
+            "temperature": 0.75,
         }
     else:
         payload = {

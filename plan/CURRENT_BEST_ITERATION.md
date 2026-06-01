@@ -97,34 +97,33 @@ Pool-1000 (tt_pool=1000) golden-200 nDCG@20 = **0.1609** -- fails gate vs Phase 
 (0.1646). Same pattern as Phase B: gains are pool-size-dependent. Use Phase A
 pool config for blind submissions until v8 re-dump + retrain resolves this.
 
-### TT v8b trial results (2026-05-30, below gate)
+### TT v8b 6K results (2026-05-31, below gate)
 
-TT v8b trained (drop_rejected + 3 hard negs) + 42-feat progress-aware LTR. All runs below gate.
-Root cause: LTR trained on only 7,953 clean turns (43% filtered DOES_NOT_MOVE). Early stop iter=78.
-Fix in progress: 6K session dump → ~21K clean turns → retrain.
+6K session dump (skip_no_progress) → 27,166 clean groups → max_groups=12K subsample for LTR.
+Root cause of regression vs v6: TT v8b pool recall 86.02% vs v6 87.21% (-1.2pp).
+H2 features (Phase E) added but did not recover gap — retrieval ceiling is the bottleneck.
 
-| Mode | Phase D (v6, current best) | v8b + 42-feat LTR | v8b + H1+H3 |
-|---|---:|---:|---:|
-| All turns (8K, official) | **0.1684** | 0.1682 | 0.1672 |
-| MOVES only (6184) | 0.1662 | 0.1666 | 0.1665 |
-| Last turn (1K) | 0.1650 | 0.1600 | 0.1591 |
-| Last+progress (836) | 0.1731 | 0.1643 | 0.1655 |
+| Mode | Phase D v6 (best) | v8b 6K no H1H3 | v8b 6K H1+H3 | Phase E H1+H2+H3 |
+|---|---:|---:|---:|---:|
+| All turns | **0.1684** | 0.1608 | 0.1615 | 0.1583 |
+| MOVES only | 0.1662 | 0.1566 | 0.1580 | 0.1543 |
+| Last turn | **0.1650** | 0.1503 | 0.1477 | 0.1479 |
+| Last+progress | **0.1731** | 0.1532 | 0.1526 | 0.1540 |
 
-Note: H1+H3 hurt all-turns (-0.0010) but helped last+progress (+0.0012). The booster
-wasn't trained with H1+H3 active so the pool distribution mismatch hurts. Once LTR
-is trained on H1+H3-generated pools (Phase E), the all-turns drop should recover.
+### Tested on Blind A (2026-05-31)
 
-### Tested on Blind A
+| Version | Blind nDCG@20 | LLM Judge | Composite | Dev nDCG@20 | Retrieval | Response |
+|---|---:|---:|---:|---:|---|---|
+| v10c (submitted) | 0.3701 | TBD | TBD | 0.1615 | v8b H1+H3 42-feat | Gemma-3-12b v07-prompt |
+| v10 | 0.3701 | 3.60 | 0.4504 | 0.1615 | v8b H1+H3 42-feat | Gemma-3-12b native (no temp) |
+| v09 | — | — | — | 0.1608 | v8b no H1H3 42-feat | Gemma-3-12b native |
+| **v07** | **0.3164** | **4.40** | **0.4837** | **0.1684** | Phase D 39-feat LTR | Gemma-3-12b v07-prompt |
+| v04 | 0.3709 | 1.10 | 0.2771 | 0.1646 | Phase A 27-feat LTR | DeepSeek V4 Flash |
 
-Not yet with v8b. Recommended blind config remains Phase A retrieval until v8b LTR
-passes gate. See `exp/inference/blind_a/submissions/README.md`.
-
-| Version | Blind nDCG@20 | LLM Judge | Composite | Dev nDCG@20 | Retrieval | Response | Track named |
-|---|---:|---:|---:|---:|---|---|---:|
-| **v07** | **0.3164** | **4.40** | **0.4837** | **0.1684** | Phase D (tt_pool=2000) + 39-feat LTR | Gemma-3-12b native API | **78/80** |
-| v06 | 0.3000 | — | — | 0.1653 | Phase B (tt_pool=2000) + 29-feat reg LTR | Gemma-3-12b | 76/80 |
-| v05 | — | — | — | 0.1646 | Phase A (tt_pool=1000) + 27-feat LTR | Gemma-4-e4b local | 9/80 |
-| v04 | 0.3709 | 1.10 | 0.2771 | 0.1646 | Phase A (tt_pool=1000) + 27-feat LTR | DeepSeek V4 Flash | 0/80 |
+Key finding (2026-05-31): v8b retrieval is stronger (nDCG 0.3701 vs 0.3164) but judge
+quality determines composite. Native API without temperature=0.75 produced worse responses.
+Fix: always use OpenAI-compat endpoint with temperature=0.75, max_tokens=200.
+Post-process responses to strip markdown asterisks (*album*) that Gemma inserts.
 
 **Key finding:** composite is dominated by LLM judge. v04 has best nDCG (0.3709) but
 judge 1.1/5 tanks composite to 0.2771. v07 wins on composite (0.4837) with judge 4.4/5
