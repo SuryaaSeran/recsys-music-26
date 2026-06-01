@@ -14,12 +14,18 @@ Quick path for a new session:
 2. `CURRENT_BEST_ITERATION.md` — the system to beat.
 3. The single active plan below.
 
-## Active phase
+## Active phases
 
 - **Phase D: TT v8b + progress-aware LTR (6K sessions)** — [08_feature_engineering_v2.md](08_feature_engineering_v2.md)
   TT v8b trained (drop_rejected + 3 hard negs). 42 features (39 Phase D + 3 user-intent proxies).
   H1+H3 inference flags implemented. 6K session feature dump running (2026-05-30).
   Gate: dev nDCG@20 > 0.1684.
+
+- **Phase F: Dev/Blind Alignment + Goal-Type Routing** — [09_generalization_routing.md](09_generalization_routing.md)
+  Ablation complete (2026-06-01): 2x dev/blind gap explained — Phase D CF/cooccurrence displaces
+  correct BM25/TT results on niche blind sessions (overlap 9.6/20 vs 15.3/20 on dev). Weakest
+  categories C/I/K (0.13-0.14). Plan: goal-type routing, implicit progress labels, query rewriting,
+  adaptive pool sizing. Target: dev > 0.1684, blind >= 0.37.
 
 ## Score ladder (full 1000-session dev nDCG@20)
 

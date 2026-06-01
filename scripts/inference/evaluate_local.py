@@ -33,6 +33,9 @@ parser.add_argument("--progress_only", action="store_true", default=False,
 parser.add_argument("--last_turn_only", action="store_true", default=False,
                     help="Only score the final music turn per session. "
                          "Matches blind evaluation format and avoids early-session noise.")
+parser.add_argument("--session_ids_file", type=str, default="",
+                    help="JSON file containing a list of session_ids to evaluate. "
+                         "If given, only sessions in the list are scored.")
 args = parser.parse_args()
 
 
@@ -70,6 +73,10 @@ ds = load_dataset("talkpl-ai/TalkPlayData-Challenge-Dataset")[args.split]
 sessions = list(ds)
 if args.sessions > 0:
     sessions = sessions[:args.sessions]
+if args.session_ids_file:
+    import json as _j
+    _sid_set = set(_j.load(open(args.session_ids_file)))
+    sessions = [s for s in sessions if s["session_id"] in _sid_set]
 
 # Per-turn-number accumulation (matches official macro semantics)
 by_turn = defaultdict(lambda: {"ndcg@1": [], "ndcg@10": [], "ndcg@20": [],

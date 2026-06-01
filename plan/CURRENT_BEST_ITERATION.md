@@ -114,21 +114,23 @@ H2 features (Phase E) added but did not recover gap — retrieval ceiling is the
 
 | Version | Blind nDCG@20 | LLM Judge | Composite | Dev nDCG@20 | Retrieval | Response |
 |---|---:|---:|---:|---:|---|---|
+| **v13 (pending submit)** | **~0.37** | **~4.4?** | **~>0.5?** | 0.1684 | Phase A 39-feat LTR | Gemma-3-12b native (asterisks stripped) |
 | v10c (submitted) | 0.3701 | TBD | TBD | 0.1615 | v8b H1+H3 42-feat | Gemma-3-12b v07-prompt |
 | v10 | 0.3701 | 3.60 | 0.4504 | 0.1615 | v8b H1+H3 42-feat | Gemma-3-12b native (no temp) |
-| v09 | — | — | — | 0.1608 | v8b no H1H3 42-feat | Gemma-3-12b native |
 | **v07** | **0.3164** | **4.40** | **0.4837** | **0.1684** | Phase D 39-feat LTR | Gemma-3-12b v07-prompt |
 | v04 | 0.3709 | 1.10 | 0.2771 | 0.1646 | Phase A 27-feat LTR | DeepSeek V4 Flash |
 
-Key finding (2026-05-31): v8b retrieval is stronger (nDCG 0.3701 vs 0.3164) but judge
-quality determines composite. Native API without temperature=0.75 produced worse responses.
-Fix: always use OpenAI-compat endpoint with temperature=0.75, max_tokens=200.
-Post-process responses to strip markdown asterisks (*album*) that Gemma inserts.
+v13 (2026-06-01): Phase A pool (same retrieval as v08) + Gemma native responses with asterisks stripped.
+Target: combine v04's nDCG strength (~0.37) with v07's judge strength (~4.4) → composite > 0.5.
+Submit: `exp/inference/blind_a/submission/submission.zip` (currently v13).
+Also in progress: v13b = Phase A pool (`blind_a_phase_a_tt2000.json`) + fresh Gemma OpenAI-compat responses
+(generation running, ~60 min remaining). Use v13b if judge score confirms stripped responses are worse.
 
-**Key finding:** composite is dominated by LLM judge. v04 has best nDCG (0.3709) but
-judge 1.1/5 tanks composite to 0.2771. v07 wins on composite (0.4837) with judge 4.4/5
-despite weaker nDCG. Next target: Phase A pool + Gemma-3-12b responses → combine best
-retrieval with best responses. Expected composite > 0.5.
+Phase F feature engineering results (2026-06-01):
+- BA100 proxy (100 sessions, blind A distribution, last-turn): Phase A=0.1213, v10=0.1042
+- 44-feat (n_sources_norm + log1p_n_sources): BA100=0.1108, dev=0.1603 — improves BA100 but below gate
+- 45-feat (+ bm25_top1): BA100=0.1045 — bm25_top1 too sparse (0.04%), hurts via noise
+- Blend D(T1-3)+A(T4+): BA100=0.1656 all-turns, 0.1213 last-turn — best zero-retrain config
 
 ## Evaluation standard
 

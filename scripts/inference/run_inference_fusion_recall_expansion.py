@@ -21,6 +21,7 @@ Usage:
         --w_tt 0.32 --w_cf 0.10 --w_qwen_meta 0.40 --w_qwen_lyrics 0.08 \
         --w_clap 0.05 --w_bm25 0.24 --bm25_norm
 """
+import math
 import os
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
@@ -97,8 +98,16 @@ parser.add_argument("--ql_pool",       type=int,   default=0,
 parser.add_argument("--bm25_sharp_pool", type=int, default=0,
                     help="Add a second BM25 retrieval using only latest_user+goal (no track history) top-K. "
                          "Targets mood/vibe turns where history text dilutes query keywords. 0=disabled.")
+parser.add_argument("--bm25_entity_pool", type=int, default=0,
+                    help="Add a focused BM25 retrieval using only extracted catalog entities (artist names "
+                         "and quoted strings) from the latest user message. Targets exact-match sessions "
+                         "where the user names a specific track/album/artist. 0=disabled.")
 parser.add_argument("--cf_pool",       type=int,   default=0,
                     help="Add CF global top-K to the pool (warm users only). 0=disabled.")
+parser.add_argument("--adaptive_pool_threshold", type=float, default=0.0,
+                    help="When BM25 top normalized score >= this value, suppress CF, "
+                         "cooccurrence, and session-mean for this turn (exact-match mode). "
+                         "Addresses Phase D regression on specific-goal sessions. 0=disabled.")
 parser.add_argument("--bm25_missing_floor", type=float, default=0.05,
                     help="BM25 signal value assigned to candidates not in BM25 pool.")
 # Artist + history-NN expansion + source-aware features
@@ -148,6 +157,11 @@ parser.add_argument("--use_goal_progress", action="store_true",
                     help="H1+H3: use goal_progress_assessments at inference to filter "
                          "rejected tracks from retrieval seeds (H1) and optionally modulate "
                          "the goal query slot (H3). Reads goal_progress_assessments from dataset.")
+parser.add_argument("--infer_progress_labels", action="store_true",
+                    help="If goal_progress_assessments are absent or incomplete, infer "
+                         "MOVES_TOWARD_GOAL / DOES_NOT_MOVE_TOWARD_GOAL labels from user "
+                         "follow-up messages (rule-based). Enables H1+H3 on blind test sessions "
+                         "that do not carry gold progress labels. Implies --use_goal_progress.")
 parser.add_argument("--rejection_drop_threshold", type=int, default=0,
                     help="H3a: drop the static goal string from all query types when "
                          "n_consecutive_rejections >= this value. 0=disabled.")
@@ -183,6 +197,33 @@ _FILLER = re.compile(
     re.IGNORECASE,
 )
 # User intent detection patterns (proxy for goal_progress_assessment)
+# Rule-based progress label inference (Track 2a, plan/09_generalization_routing.md)
+# Classifies user follow-up messages to infer MOVES/DOES_NOT_MOVE without gold labels.
+_PROGRESS_POSITIVE_RE = re.compile(
+    r"\b(yes\b|yeah|yep|perfect|exactly|that'?s (it|exactly|right|perfect)|love (it|this)|"
+    r"great (choice|pick|selection)?|awesome|fantastic|excellent|found (it|what)|"
+    r"keep (going|them coming|it up)|more like (this|that)|that'?s the (one|song|track)|"
+    r"this is (perfect|it|exactly)|that is (perfect|it|exactly))\b",
+    re.IGNORECASE,
+)
+_PROGRESS_NEGATIVE_RE = re.compile(
+    r"\b(not (quite|really|this|that|it)|something (different|else|more|other)|"
+    r"try (something|another|a different)|rather (have|get|hear)|instead|"
+    r"don'?t (want|like|think)|that'?s not|not what i|too (slow|fast|heavy|light|pop|dark|upbeat|sad|old|new)|"
+    r"i was (thinking|hoping|looking for)|i'?m (looking for|hoping for|thinking more))\b",
+    re.IGNORECASE,
+)
+
+def _infer_progress_label(user_followup: str) -> str:
+    """Classify a user follow-up message as MOVES or DOES_NOT_MOVE (or empty if unclear)."""
+    if not user_followup:
+        return ""
+    if _PROGRESS_POSITIVE_RE.search(user_followup):
+        return "MOVES_TOWARD_GOAL"
+    if _PROGRESS_NEGATIVE_RE.search(user_followup):
+        return "DOES_NOT_MOVE_TOWARD_GOAL"
+    return ""
+
 _NEGATION = re.compile(
     r"\b(not what|not quite|not really|not exactly|doesn't|don't|didn't|"
     r"isn't|wasn't|that's not|but i(?:'m| am)|but i want|but i(?:'d| would)|"
@@ -238,6 +279,34 @@ if args.artist_expansion:
         artist_to_tids[_k] = [t for _, t in _bucket[:args.artist_cap]]
 known_artists = sorted(artist_to_tids.keys(), key=len, reverse=True)
 print(f"Artist dict: {len(known_artists):,} artists (expansion={'on' if args.artist_expansion else 'off'})")
+
+# For entity extraction: always build a flat artist name set (>=4 chars to reduce false positives).
+# This is independent of --artist_expansion so entity BM25 works without full artist expansion.
+_entity_artist_names: list[str] = sorted(
+    {_a.strip().lower() for _tid, _row in metadata_dict.items()
+     for _a in (_row.get("artist_name") or []) if _a and len(_a.strip()) >= 4},
+    key=len, reverse=True
+)
+_QUOTED_RE = re.compile(r'[“”‘’"\']([\w][^“”‘’"\']{2,59})[“”‘’"\']')
+
+def extract_query_entities(text: str) -> str:
+    """Extract catalog artist names and quoted strings from query text.
+    Returns a focused query string for entity-targeted BM25 retrieval."""
+    if not text:
+        return ""
+    parts: list[str] = []
+    tl = text.lower()
+    # Artist names (catalog match, longest first to avoid partial matches)
+    for a in _entity_artist_names:
+        if a in tl:
+            parts.append(a)
+            tl = tl.replace(a, " " * len(a))
+    # Quoted strings (likely track/album names)
+    for m in _QUOTED_RE.finditer(text):
+        q = m.group(1).strip()
+        if len(q) > 2:
+            parts.append(q)
+    return " ".join(parts)
 
 def find_mentioned_artists(text: str) -> list[tuple[str, str]]:
     """Return [(artist, match_source)] for catalog artists verbatim in text."""
@@ -424,7 +493,11 @@ FEATURE_COLS = [
     "user_has_negation",    # 1.0 if latest user msg contains correction/negation words
     "user_has_followup",    # 1.0 if latest user msg is a continuation ("more", "another", "similar")
     "query_track_tag_sim",  # fraction of gold candidate's tags that appear in user query (per-candidate)
-    # Phase E: H2 history-based features (require --use_goal_progress; 0 otherwise)
+    # Phase F: turn-position-normalised source agreement + exact-match signal (indices 42-44)
+    "n_sources_norm",         # n_sources / (1 + turn_number) — scale-invariant across positions
+    "log1p_n_sources",        # log1p(n_sources) — dampens outsized n_sources dominance
+    "bm25_top1",              # 1.0 if this candidate is the #1 BM25 result; rewards exact-match hits
+    # Phase E: H2 history-based features (require --use_goal_progress; 0 otherwise; indices 44-47)
     "sim_to_pos_hist_mean",   # TT cosine between candidate and mean of MOVES_TOWARD prior tracks
     "sim_to_neg_hist_mean",   # TT cosine between candidate and mean of DOES_NOT_MOVE prior tracks
     "artist_in_rejected_set", # 1.0 if candidate artist appears in any prior DOES_NOT_MOVE track
@@ -553,9 +626,24 @@ for item in tqdm(sessions, desc="Sessions"):
     goal_category_int = float(GOAL_CATEGORY_MAP.get(_goal_cat, 0))
     # Goal progress assessment per turn (for --progress_aware / --skip_no_progress / --use_goal_progress)
     _progress_by_turn: dict[int, str] = {}
-    if args.progress_aware or args.skip_no_progress or args.use_goal_progress:
+    _use_any_progress = args.progress_aware or args.skip_no_progress or args.use_goal_progress or args.infer_progress_labels
+    if _use_any_progress:
         for _a in (item.get("goal_progress_assessments") or []):
             _progress_by_turn[_a["turn_number"]] = _a.get("goal_progress_assessment", "")
+    # --infer_progress_labels: fill in missing labels from user follow-up text.
+    # Also implies --use_goal_progress so H1/H3 fire automatically.
+    if args.infer_progress_labels:
+        _convs_raw = item["conversations"]
+        _last_music_tnum: int | None = None
+        for _t in _convs_raw:
+            if _t["role"] == "music" and _t.get("content"):
+                _last_music_tnum = _t["turn_number"]
+            elif _t["role"] == "user" and _last_music_tnum is not None:
+                if _progress_by_turn.get(_last_music_tnum) is None or _progress_by_turn.get(_last_music_tnum) == "":
+                    _inferred = _infer_progress_label(_t["content"])
+                    if _inferred:
+                        _progress_by_turn[_last_music_tnum] = _inferred
+                _last_music_tnum = None  # reset: next user message is a new query
     conversations = item["conversations"]
 
     if args.blind_mode:
@@ -602,7 +690,8 @@ for item in tqdm(sessions, desc="Sessions"):
 
         # H1: positive_history — seed expansion only from non-rejected prior tracks.
         # Falls back to raw music_history when no positive exists (e.g. turn 1).
-        if args.use_goal_progress:
+        _use_progress_at_inference = args.use_goal_progress or args.infer_progress_labels
+        if _use_progress_at_inference:
             _pos_hist = [t for t, l in zip(music_history, music_history_labels)
                          if l != "DOES_NOT_MOVE_TOWARD_GOAL"] or music_history
         else:
@@ -610,7 +699,7 @@ for item in tqdm(sessions, desc="Sessions"):
 
         # H3: goal-slot modulation
         _goal_for_query = goal
-        if args.use_goal_progress and music_history_labels:
+        if _use_progress_at_inference and music_history_labels:
             # Most recent MOVES_TOWARD_GOAL track (for H3b substitution)
             _most_recent_pos_tid = next(
                 (t for t, l in zip(reversed(music_history), reversed(music_history_labels))
@@ -677,6 +766,9 @@ for item in tqdm(sessions, desc="Sessions"):
         else:
             bm25_native_sig = {tid: 1.0 / (r + 1) for r, tid in enumerate(bm25_cands)}
 
+        # Track the #1 BM25 result for the bm25_top1 feature (exact-match signal)
+        _bm25_top1_tid: str | None = bm25_cands[0] if bm25_cands else None
+
         cands = list(bm25_cands)
         cands_set = set(cands)
         sources: dict[str, set] = {tid: {"bm25"} for tid in cands}
@@ -727,10 +819,17 @@ for item in tqdm(sessions, desc="Sessions"):
                 if src_label == "qm" and tid not in qm_rank_map:
                     qm_rank_map[tid] = rank
 
+        # Adaptive pool: when the query contains explicit entity mentions (exact-match mode),
+        # suppress CF, cooccurrence, and session-mean to avoid mainstream-bias dilution.
+        _exact_match_mode = (
+            args.adaptive_pool_threshold > 0
+            and bool(extract_query_entities(latest_user))
+        )
+
         add_topk(tt_all,   tt_ids,         args.tt_pool,  "tt")
         add_topk(qm_all,   qwen_meta_ids,  args.qwen_pool, "qm")
         add_topk(ql_all,   qwen_lyrics_ids, args.ql_pool,  "ql")
-        if cf_all is not None:
+        if cf_all is not None and not _exact_match_mode:
             add_topk(cf_all, cf_track_ids,  args.cf_pool, "cf")
 
         # Sharp BM25: re-query with only latest_user + goal (no track history).
@@ -746,6 +845,20 @@ for item in tqdm(sessions, desc="Sessions"):
                         cands.append(tid); cands_set.add(tid)
                         sources[tid] = set()
                     sources[tid].add("bm25_sharp")
+
+        # Entity BM25: focused query using catalog artist names + quoted strings from latest_user.
+        # Targets sessions where the user explicitly names a specific track/album/artist.
+        if args.bm25_entity_pool > 0:
+            entity_query = extract_query_entities(latest_user)
+            if entity_query:
+                entity_k = args.bm25_entity_pool + len(seen) * 3
+                entity_tids, _ = retrieve_bm25(entity_query, topk=entity_k)
+                entity_filtered = [t for t in entity_tids if t not in seen][:args.bm25_entity_pool]
+                for rank, tid in enumerate(entity_filtered):
+                    if tid not in cands_set:
+                        cands.append(tid); cands_set.add(tid)
+                        sources[tid] = set()
+                    sources[tid].add("bm25_entity")
 
         # Artist expansion
         if args.artist_expansion:
@@ -812,7 +925,7 @@ for item in tqdm(sessions, desc="Sessions"):
                 vn = np.linalg.norm(v)
                 if vn > 1e-8:
                     mean_session_vec = (v / vn).astype(np.float32)
-        if args.session_mean_k > 0 and mean_session_vec is not None:
+        if args.session_mean_k > 0 and mean_session_vec is not None and not _exact_match_mode:
             sims = tt_embs @ mean_session_vec
             for i in hist_idxs:
                 sims[i] = -1e9
@@ -830,7 +943,7 @@ for item in tqdm(sessions, desc="Sessions"):
                     mean_nn_rank_map[tid] = rank
 
         # Co-occurrence expansion (behavioural next-song table from TRAIN)
-        if cooccur_neigh_ids is not None and cooccur_ks_list and music_history:
+        if cooccur_neigh_ids is not None and cooccur_ks_list and music_history and not _exact_match_mode:
             for pos, k_co in enumerate(cooccur_ks_list):
                 if k_co <= 0 or pos >= len(music_history):
                     break
@@ -1112,6 +1225,10 @@ for item in tqdm(sessions, desc="Sessions"):
                     _user_has_negation,
                     _user_has_followup,
                     _tag_query_sim_f,
+                    # Phase F: turn-position-normalised source agreement (must precede H2 to match 44-feat model)
+                    _n_sources_f / (1.0 + float(turn_number)),
+                    math.log1p(_n_sources_f),
+                    1.0 if tid == _bm25_top1_tid else 0.0,  # bm25_top1
                     # Phase E: H2 history-based features
                     _sim_pos_f,
                     _sim_neg_f,
