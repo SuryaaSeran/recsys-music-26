@@ -12,3 +12,5 @@ adapters/
 music-crs-baselines/
 models/
 music-crs-evaluator/
+.gitcreds
+

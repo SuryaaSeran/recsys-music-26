@@ -25,6 +25,10 @@ parser.add_argument("--hit", action="store_true",
 parser.add_argument("--strict", action="store_true", default=True,
                     help="Raise on duplicate track IDs (official behaviour). Use --no-strict to warn instead.")
 parser.add_argument("--no-strict", dest="strict", action="store_false")
+parser.add_argument("--last_turn_only", action="store_true",
+                    help="Score only the last music turn per session (simulates Blind A evaluation).")
+parser.add_argument("--per_turn_breakdown", action="store_true",
+                    help="Print nDCG@20 and Hit@20 per turn position.")
 args = parser.parse_args()
 
 
@@ -63,6 +67,18 @@ sessions = list(ds)
 if args.sessions > 0:
     sessions = sessions[:args.sessions]
 
+# Build last-turn lookup if needed (max music turn_number per session)
+last_turn_per_session: dict = {}
+if args.last_turn_only:
+    for item in sessions:
+        sid = item["session_id"]
+        max_tn = max(
+            (t["turn_number"] for t in item["conversations"] if t["role"] == "music"),
+            default=-1,
+        )
+        if max_tn >= 0:
+            last_turn_per_session[sid] = max_tn
+
 # Per-turn-number accumulation (matches official macro semantics)
 by_turn = defaultdict(lambda: {"ndcg@1": [], "ndcg@10": [], "ndcg@20": [],
                                 "hit@1": 0, "hit@10": 0, "hit@20": 0, "n": 0})
@@ -77,6 +93,8 @@ for item in sessions:
             continue
         gold = turn["content"]
         tnum = turn["turn_number"]
+        if args.last_turn_only and tnum != last_turn_per_session.get(session_id, -1):
+            continue
         key = (session_id, tnum)
         if key not in pred_lookup:
             continue
@@ -133,3 +151,31 @@ if args.hit:
     print(f"Hit@1:   {h1}/{total} = {100*h1/total:.1f}%")
     print(f"Hit@10:  {h10}/{total} = {100*h10/total:.1f}%")
     print(f"Hit@20:  {h20}/{total} = {100*h20/total:.1f}%")
+
+if args.per_turn_breakdown:
+    print("\nPer-turn breakdown:")
+    print(f"  {'Turn':>4}  {'nDCG@20':>8}  {'nDCG@10':>8}  {'nDCG@1':>8}  {'Hit@20':>8}  {'n':>5}")
+    for t in sorted(by_turn):
+        b = by_turn[t]
+        n = b["n"]
+        m20 = sum(b["ndcg@20"]) / len(b["ndcg@20"])
+        m10 = sum(b["ndcg@10"]) / len(b["ndcg@10"])
+        m1  = sum(b["ndcg@1"])  / len(b["ndcg@1"])
+        hr  = b["hit@20"] / n if n else 0
+        print(f"  {t:>4}  {m20:>8.4f}  {m10:>8.4f}  {m1:>8.4f}  {100*hr:>7.1f}%  {n:>5}")
+    # Print early/late/last buckets
+    def _bucket_ndcg(turns):
+        vals = []
+        for t in turns:
+            if t in by_turn and by_turn[t]["ndcg@20"]:
+                vals.extend(by_turn[t]["ndcg@20"])
+        return sum(vals) / len(vals) if vals else 0.0
+    all_turns = sorted(by_turn)
+    if len(all_turns) > 1:
+        mid = len(all_turns) // 2
+        early = all_turns[:mid]
+        late  = all_turns[mid:]
+        last  = [all_turns[-1]]
+        print(f"\n  Early (turns {early[0]}-{early[-1]}):  nDCG@20 = {_bucket_ndcg(early):.4f}")
+        print(f"  Late  (turns {late[0]}-{late[-1]}):  nDCG@20 = {_bucket_ndcg(late):.4f}")
+        print(f"  Last  (turn {last[0]}):          nDCG@20 = {_bucket_ndcg(last):.4f}")

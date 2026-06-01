@@ -61,6 +61,14 @@ parser.add_argument("--soft_labels",    action="store_true",
 parser.add_argument("--poly_feats",     action="store_true",
                     help="Expand features with pairwise interaction columns computed "
                          "at load time. No re-dump needed.")
+parser.add_argument("--turn_weight_mode", default="uniform",
+                    choices=["uniform", "last_only", "late_only", "late_heavy", "progressive"],
+                    help="How to weight turns for blind-aligned training. "
+                         "uniform: all turns equal (default). "
+                         "last_only: only the last music turn per session. "
+                         "late_only: only turns 5-8. "
+                         "late_heavy: turns 5-8 weight 2.0, turns 1-4 weight 0.5. "
+                         "progressive: weight = turn_number / 8.")
 args = parser.parse_args()
 
 # ── Load data ─────────────────────────────────────────────────────────────────
@@ -140,6 +148,72 @@ for t_idx, m in enumerate(turn_meta):
 sessions = list(session_to_turns.keys())
 print(f"  sessions: {len(sessions)}")
 
+# ── Turn weighting / filtering for blind-aligned training ────────────────────
+# turn_meta[i] has {"session_id", "turn_number", "gold"} for each turn index i.
+# Build per-turn weights and optionally drop turns.
+
+_turn_numbers = np.array([m["turn_number"] for m in turn_meta], dtype=np.int32)
+_turn_weights: np.ndarray | None = None  # None = uniform (no weight vector)
+_keep_turns: set | None = None           # None = keep all
+
+if args.turn_weight_mode == "last_only":
+    # Keep only the highest turn_number per session
+    _keep_turns = set()
+    for sid, tidxs in session_to_turns.items():
+        best = max(tidxs, key=lambda t: _turn_numbers[t])
+        _keep_turns.add(best)
+    print(f"  turn_weight_mode=last_only: keeping {len(_keep_turns)}/{n_turns} turns")
+
+elif args.turn_weight_mode == "late_only":
+    # Keep only turns with turn_number >= 5
+    _keep_turns = {t for t in range(n_turns) if _turn_numbers[t] >= 5}
+    print(f"  turn_weight_mode=late_only: keeping {len(_keep_turns)}/{n_turns} turns "
+          f"(turn_number >= 5)")
+
+elif args.turn_weight_mode == "late_heavy":
+    # Turns 5-8 get weight 2.0, turns 1-4 get weight 0.5
+    _turn_weights = np.where(_turn_numbers >= 5, 2.0, 0.5).astype(np.float32)
+    print(f"  turn_weight_mode=late_heavy: "
+          f"late(>=5) weight=2.0 ({(_turn_numbers >= 5).sum()} turns), "
+          f"early(<5) weight=0.5 ({(_turn_numbers < 5).sum()} turns)")
+
+elif args.turn_weight_mode == "progressive":
+    # Weight = turn_number / 8 (so turn 1 = 0.125, turn 8 = 1.0)
+    _turn_weights = (_turn_numbers / 8.0).astype(np.float32)
+    print(f"  turn_weight_mode=progressive: weights range "
+          f"[{_turn_weights.min():.3f}, {_turn_weights.max():.3f}]")
+
+# Apply filtering: rebuild X, y, group, turn_meta, session_to_turns
+if _keep_turns is not None:
+    kept_sorted = sorted(_keep_turns)
+    # Remap turn indices
+    old_to_new = {old: new for new, old in enumerate(kept_sorted)}
+    row_mask = np.isin(group, kept_sorted)
+    X = X[row_mask]
+    y = y[row_mask]
+    # Remap group values
+    group_old = group[row_mask]
+    group = np.array([old_to_new[int(g)] for g in group_old], dtype=np.int32)
+    turn_meta = [turn_meta[i] for i in kept_sorted]
+    n_turns = len(kept_sorted)
+    # Rebuild session_to_turns with new indices
+    session_to_turns = {}
+    for t_idx, m in enumerate(turn_meta):
+        session_to_turns.setdefault(m["session_id"], []).append(t_idx)
+    sessions = list(session_to_turns.keys())
+    _turn_numbers = np.array([m["turn_number"] for m in turn_meta], dtype=np.int32)
+    if _turn_weights is not None:
+        _turn_weights = _turn_weights[np.array(kept_sorted)]
+    print(f"  after filtering: X={X.shape}  turns={n_turns}  sessions={len(sessions)}")
+
+# Expand turn-level weights to row-level weights (one weight per candidate row)
+_row_weights: np.ndarray | None = None
+if _turn_weights is not None:
+    _row_weights = _turn_weights[group]
+    print(f"  row weights: shape={_row_weights.shape}  "
+          f"mean={_row_weights.mean():.3f}  min={_row_weights.min():.3f}  "
+          f"max={_row_weights.max():.3f}")
+
 rng = np.random.default_rng(args.seed)
 rng.shuffle(sessions)
 folds = [sessions[i::args.n_folds] for i in range(args.n_folds)]
@@ -150,11 +224,12 @@ print(f"\nFold sizes: {[len(f) for f in folds]} sessions")
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def slice_for_turns(turn_idxs: list[int]):
-    """Row-slice X/y for given turn indices; return (X, y, group_sizes)."""
+    """Row-slice X/y/weights for given turn indices; return (X, y, group_sizes, weights)."""
     turn_idxs = sorted(turn_idxs)
     row_mask  = np.isin(group, turn_idxs)
     Xs = X[row_mask]
     ys = y[row_mask]
+    ws = _row_weights[row_mask] if _row_weights is not None else None
     g_local = group[row_mask]
     sizes, last = [], -1
     for tid in g_local:
@@ -162,7 +237,7 @@ def slice_for_turns(turn_idxs: list[int]):
             sizes.append(0)
             last = tid
         sizes[-1] += 1
-    return Xs, ys, np.asarray(sizes, dtype=np.int32)
+    return Xs, ys, np.asarray(sizes, dtype=np.int32), ws
 
 
 def build_params(nl, lr, l2, mdil):
@@ -203,17 +278,18 @@ def run_cv(nl, lr, l2, mdil, tag="", save_dir=None):
         train_turns = [t for s in train_sessions for t in session_to_turns[s]]
         val_turns   = [t for s in val_sessions   for t in session_to_turns[s]]
 
-        Xtr, ytr, gtr = slice_for_turns(train_turns)
-        Xva, yva, gva = slice_for_turns(val_turns)
+        Xtr, ytr, gtr, wtr = slice_for_turns(train_turns)
+        Xva, yva, gva, wva = slice_for_turns(val_turns)
 
         # Guard: skip fold if no positives in val
         if yva.sum() == 0:
             print(f"  fold {fi+1}: WARNING no positives in val — skipping")
             continue
 
-        dtr = lgb.Dataset(Xtr, label=ytr, group=gtr, feature_name=feature_cols)
-        dva = lgb.Dataset(Xva, label=yva, group=gva, feature_name=feature_cols,
-                          reference=dtr)
+        dtr = lgb.Dataset(Xtr, label=ytr, group=gtr, weight=wtr,
+                          feature_name=feature_cols)
+        dva = lgb.Dataset(Xva, label=yva, group=gva, weight=wva,
+                          feature_name=feature_cols, reference=dtr)
 
         booster = lgb.train(
             params, dtr,
@@ -325,8 +401,9 @@ else:
 print(f"\nRefitting on all {n_turns} turns  iter={final_iter} "
       f"nl={final_nl}  lr={final_lr}  l2={final_l2}  mdil={final_mdil} ...")
 all_turns = list(range(n_turns))
-Xall, yall, gall = slice_for_turns(all_turns)
-dfull = lgb.Dataset(Xall, label=yall, group=gall, feature_name=feature_cols)
+Xall, yall, gall, wall = slice_for_turns(all_turns)
+dfull = lgb.Dataset(Xall, label=yall, group=gall, weight=wall,
+                    feature_name=feature_cols)
 
 final = lgb.train(
     build_params(final_nl, final_lr, final_l2, final_mdil),
@@ -379,6 +456,7 @@ with open(side, "w") as f:
             "feature_fraction":     args.feature_fraction,
             "bagging_fraction":     args.bagging_fraction,
             "truncation_level":     args.truncation_level,
+            "turn_weight_mode":     args.turn_weight_mode,
         },
         "feature_importance": {
             "gain":  {n: int(g) for n, g, _ in feat_gain},
