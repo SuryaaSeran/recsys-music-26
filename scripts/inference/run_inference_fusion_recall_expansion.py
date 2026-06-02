@@ -74,6 +74,9 @@ parser.add_argument("--emit_topk",   type=int,   default=0,
                     help="If >0, write this many candidate IDs per turn into "
                          "predicted_track_ids (for downstream reranking). Default 0 "
                          "uses --topk. The reranker truncates back to 20.")
+parser.add_argument("--emit_scores", action="store_true", default=False,
+                    help="Also write per-candidate LTR scores (ltr_scores) aligned "
+                         "to predicted_track_ids, for confidence-gated reranking.")
 parser.add_argument("--bm25_pool",   type=int,   default=500)
 parser.add_argument("--hist_turns",  type=int,   default=4)
 parser.add_argument("--text_turns",  type=int,   default=4)
@@ -1301,12 +1304,15 @@ for item in tqdm(sessions, desc="Sessions"):
         name   = (row.get("track_name")  or ["this track"])[0]
         artist = (row.get("artist_name") or ["the artist"])[0]
 
-        inference_results.append({
+        _rec = {
             "session_id": session_id, "user_id": user_id,
             "turn_number": turn_number,
             "predicted_track_ids": predicted_track_ids,
             "predicted_response": f'I recommend "{name}" by {artist} based on your request.',
-        })
+        }
+        if args.emit_scores:
+            _rec["ltr_scores"] = [float(total_arr[i]) for i in top_idx]
+        inference_results.append(_rec)
 
         if prov_fh is not None:
             gold = turn["content"]
