@@ -70,6 +70,10 @@ parser.add_argument("--session_offset", type=int, default=0,
 parser.add_argument("--tid",         default="fusion_recall_v1")
 parser.add_argument("--out_dir",     default="exp/inference/devset")
 parser.add_argument("--topk",        type=int,   default=20)
+parser.add_argument("--emit_topk",   type=int,   default=0,
+                    help="If >0, write this many candidate IDs per turn into "
+                         "predicted_track_ids (for downstream reranking). Default 0 "
+                         "uses --topk. The reranker truncates back to 20.")
 parser.add_argument("--bm25_pool",   type=int,   default=500)
 parser.add_argument("--hist_turns",  type=int,   default=4)
 parser.add_argument("--text_turns",  type=int,   default=4)
@@ -1288,7 +1292,8 @@ for item in tqdm(sessions, desc="Sessions"):
                     _torch.from_numpy(_norm)
                 ).numpy().astype(np.float32)
 
-        top_idx = np.argsort(total_arr)[::-1][:args.topk]
+        _emit_k = args.emit_topk if args.emit_topk > 0 else args.topk
+        top_idx = np.argsort(total_arr)[::-1][:_emit_k]
         predicted_track_ids = [cands[i] for i in top_idx]
 
         top = predicted_track_ids[0] if predicted_track_ids else ""
