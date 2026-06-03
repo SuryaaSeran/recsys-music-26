@@ -100,12 +100,25 @@ prior turns.
 `goal_progress_assessments`: list of `{turn_number, goal_progress_assessment}` where
 the label is `MOVES_TOWARD_GOAL` | `DOES_NOT_MOVE_TOWARD_GOAL` | `None`.
 
-### Blind A specifics
+### Blind A specifics (IMPORTANT: predict the LAST turn only)
 
-Same schema, but each session's `conversations` ends at a `user` turn (turn_number 1
-only in Blind A): you predict the next `music` turn after the last user message. No
-gold ids, no assistant text to learn from. 80 sessions, one prediction each. The
-response string **must** be filled (judged).
+Same schema, but the conversation is **truncated at a `user` message** and you
+complete it. Verified across all 80 sessions:
+
+- Every session ends on a `user` turn. You predict **exactly one** `music` turn per
+  session: the next track after the last user message. **80 predictions total**, not
+  8-per-session like dev.
+- History length **varies per session**. The terminating `turn_number` ranges 1..8
+  (counts: t1=20, t2=15, t3=10, t4=5, t5=8, t6=9, t7=8, t8=5). So the number of
+  already-completed music turns = `last_turn_number - 1` (0 to 7 prior gold tracks
+  of context).
+- No gold ids, no assistant text to learn from. The `predicted_response` **must** be
+  filled (LLM-judged).
+
+Consequence for modeling/selection: dev macro-averages over all 8 turn positions,
+but blind only ever tests one **terminal** turn per session, with a known
+position mix skewed toward early turns (35/80 end at t1-t2). Weight dev analysis by
+that distribution rather than treating all positions equally.
 
 ## CATALOG: track metadata (`all_tracks`, 47071 rows)
 
@@ -126,20 +139,27 @@ album_id      array[str]
 
 ## PRECOMPUTED TRACK EMBEDDINGS
 
-Parquet `all_tracks` (sharded 4 files) + `test_tracks`. Per track_id, six modality
-vectors:
+Source: <https://huggingface.co/datasets/talkpl-ai/TalkPlayData-Challenge-Track-Embeddings>
+Parquet `all_tracks` (sharded 4 files) + `test_tracks`. One row per track_id with
+six **separate** modality vectors. **Keep them separate, do not concatenate** — each
+is its own space; let the model decide how to combine them.
 
-| Column | Dim | Source |
-|---|---:|---|
-| `audio-laion_clap` | 512 | LAION CLAP audio |
-| `image-siglip2` | 768 | SigLIP2 cover image |
-| `cf-bpr` | 128 | collaborative filtering BPR |
-| `attributes-qwen3_embedding_0.6b` | 1024 | Qwen3 over attributes |
-| `lyrics-qwen3_embedding_0.6b` | 1024 | Qwen3 over lyrics |
-| `metadata-qwen3_embedding_0.6b` | 1024 | Qwen3 over metadata |
+| Column | Dim | Source | Present / 47071 |
+|---|---:|---|---:|
+| `audio-laion_clap` | 512 | LAION CLAP audio | 46579 |
+| `image-siglip2` | 768 | SigLIP2 cover image | 46485 |
+| `cf-bpr` | 128 | collaborative filtering BPR | 46455 |
+| `attributes-qwen3_embedding_0.6b` | 1024 | Qwen3 over attributes | 46579 |
+| `lyrics-qwen3_embedding_0.6b` | 1024 | Qwen3 over lyrics | 46579 |
+| `metadata-qwen3_embedding_0.6b` | 1024 | Qwen3 over metadata | 46579 |
 
-Concatenated = 4480 dims (512+768+128+1024+1024+1024). User embeddings dataset
-provides matching cf-bpr user vectors for warm users; cold users have none.
+Every track_id has a row, but individual modalities have gaps (empty array). Treat a
+missing modality as absent (zero-fill + presence mask), not zero-signal. User
+embeddings dataset provides matching cf-bpr user vectors for warm users; cold users
+have none.
+
+Parser: `src/tracks.py` (`load_catalog`, `load_track_embeddings`). The loader returns
+per-modality matrices aligned to one track_id list plus a presence mask per modality.
 
 ## OUTPUT / SUBMISSION
 
