@@ -1,0 +1,16 @@
+# data + experiment artifacts
+data/
+exp/
+*.npy
+*.parquet
+*.pkl
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.env
+.env.local
+
+# os
+.DS_Store
