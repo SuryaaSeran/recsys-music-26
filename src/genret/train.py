@@ -26,6 +26,8 @@ from src.genret.tokens import SemTokenizer
 def resolve_device(pref="auto"):
     if pref != "auto":
         return pref
+    if torch.cuda.is_available():
+        return "cuda"
     return "mps" if torch.backends.mps.is_available() else "cpu"
 
 
