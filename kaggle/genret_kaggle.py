@@ -239,11 +239,11 @@ def build_model(tok, sem, dtype, device):
     raw = AutoModelForCausalLM.from_pretrained(BASE_MODEL, dtype=dtype)
     raw.resize_token_embeddings(len(tok), mean_resizing=False)
     lv = attach_lean_vocab(raw, sem.new_lo)
-    get_peft_model(raw, LoraConfig(task_type="CAUSAL_LM", r=16, lora_alpha=32,
+    peft_model = get_peft_model(raw, LoraConfig(task_type="CAUSAL_LM", r=16, lora_alpha=32,
                    lora_dropout=0.05, target_modules=["q_proj", "k_proj", "v_proj", "o_proj"]))
     lv.new_emb.requires_grad_(True)
     raw.to(device)
-    return raw, lv
+    return raw, peft_model, lv
 
 
 def loss_and_acc(raw, lv, b):
@@ -343,7 +343,7 @@ def main():
     print(f"train_sessions={len(train_rows)}  dev_examples={len(dev)} "
           f"ceiling={np.mean([e['gold_has_cf'] for e in dev]):.4f}", flush=True)
 
-    raw, lv = build_model(tok, sem, dtype, device)
+    raw, peft_model, lv = build_model(tok, sem, dtype, device)
     params = [p for p in raw.parameters() if p.requires_grad]
     print(f"trainable={sum(p.numel() for p in params)/1e6:.2f}M", flush=True)
     opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=0.0)
@@ -352,7 +352,7 @@ def main():
 
     def save_ckpt(d):
         d = Path(d); d.mkdir(parents=True, exist_ok=True)
-        raw.save_pretrained(d); tok.save_pretrained(d)
+        peft_model.save_pretrained(d); tok.save_pretrained(d)   # LoRA adapter only
         torch.save({"new_lo": lv.new_lo, "new_rows": lv.new_emb.detach().cpu()},
                    d / "new_token_embeddings.pt")
 

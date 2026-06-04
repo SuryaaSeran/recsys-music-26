@@ -40,10 +40,10 @@ def build_model(cfg: GenRetConfig, device: str):
     lora = LoraConfig(task_type="CAUSAL_LM", r=cfg.lora_r, lora_alpha=cfg.lora_alpha,
                       lora_dropout=cfg.lora_dropout,
                       target_modules=["q_proj", "k_proj", "v_proj", "o_proj"])
-    get_peft_model(raw, lora)                       # injects LoRA in-place; freezes base
+    peft_model = get_peft_model(raw, lora)          # injects LoRA in-place; freezes base
     lv.new_emb.requires_grad_(True)                 # re-enable our new rows
     raw.to(device)
-    return raw, lv, tok, sem
+    return raw, peft_model, lv, tok, sem
 
 
 def loss_and_acc(raw, lv, batch):
@@ -65,7 +65,7 @@ def train(cfg: GenRetConfig, overfit: int = 0):
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
 
-    raw, lv, tok, sem = build_model(cfg, device)
+    raw, peft_model, lv, tok, sem = build_model(cfg, device)
     pad_id = tok.eos_token_id
 
     data = [json.loads(l) for l in open(Path(cfg.data_dir) / "train.jsonl")]
@@ -105,16 +105,16 @@ def train(cfg: GenRetConfig, overfit: int = 0):
         peak = torch.mps.driver_allocated_memory() / 1e9 if device == "mps" else 0
         print(f"epoch {epoch}: loss {run_loss/nb:.4f}  tgt_acc {run_acc/nb:.4f}  "
               f"{(time.time()-t0)/60:.1f} min  mps_peak {peak:.1f}GB")
-        save_checkpoint(raw, lv, tok, out)
+        save_checkpoint(peft_model, lv, tok, out)
 
     drift = (lv.frozen.detach() - frozen_snap).abs().max().item()
     print(f"frozen-embedding max drift (want 0): {drift:.2e}")
     return {"frozen_drift": drift}
 
 
-def save_checkpoint(raw, lv, tok, out_dir):
+def save_checkpoint(peft_model, lv, tok, out_dir):
     out = Path(out_dir)
-    raw.save_pretrained(out)                         # LoRA adapter
+    peft_model.save_pretrained(out)                  # LoRA adapter (adapter_config.json + weights)
     tok.save_pretrained(out)
     torch.save({"new_lo": lv.new_lo, "new_rows": lv.new_emb.detach().cpu()},
                out / "new_token_embeddings.pt")
