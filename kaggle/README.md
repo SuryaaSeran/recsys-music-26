@@ -22,7 +22,8 @@ runtime; nothing extra to upload.)
 !python genret_kaggle.py \
     --sem /kaggle/input/reccys-cf-ids/semantic_ids.json \
     --out /kaggle/working/ckpt \
-    --epochs 8 --batch-size 16 --grad-accum 2 --eval-every 2 --eval-n 1000
+    --epochs 12 --batch-size 16 --grad-accum 2 \
+    --eval-every 2 --eval-n 1000 --patience 3
 ```
 
 ## What it does
@@ -36,10 +37,14 @@ runtime; nothing extra to upload.)
 - Every `--eval-every` epochs: trie-constrained beam=256 decode -> recall@{20,50,100,200}
   on `--eval-n` dev turns, with `ceiling`, `gold_first_token_in_pool`, `exact_top1`, and
   recall@200 by turn. Headline: `recall.200` vs `ceiling` (~0.983).
+- **Early stopping** on recall@200: stops after `--patience` consecutive evals with no
+  gain (`--min-delta`). The best checkpoint is kept in `ckpt/best/` regardless of when
+  it occurred, so you can set `--epochs 12` and let it stop itself.
 
 ## Outputs (in /kaggle/working/ckpt)
-- `adapter_model.safetensors` + `new_token_embeddings.pt` + tokenizer  (the trained gen)
-- `eval_epochN.json` per eval.
+- `ckpt/best/` -- best-by-recall@200 weights (adapter + `new_token_embeddings.pt` +
+  tokenizer) and `best/eval.json`. **Use this one.**
+- `ckpt/` -- latest epoch's weights; `eval_epochN.json` per eval.
 
 ## Knobs
 - Faster/smaller: `--batch-size 8`. More data per epoch is automatic via resampling.

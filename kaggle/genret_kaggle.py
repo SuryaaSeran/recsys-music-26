@@ -320,6 +320,8 @@ def main():
     ap.add_argument("--max-ctx", type=int, default=256)
     ap.add_argument("--eval-n", type=int, default=1000)
     ap.add_argument("--eval-every", type=int, default=2)
+    ap.add_argument("--patience", type=int, default=3, help="evals w/o recall@200 gain before stop")
+    ap.add_argument("--min-delta", type=float, default=0.0)
     args = ap.parse_args()
 
     from datasets import load_dataset
@@ -348,6 +350,13 @@ def main():
     pad = tok.eos_token_id
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
 
+    def save_ckpt(d):
+        d = Path(d); d.mkdir(parents=True, exist_ok=True)
+        raw.save_pretrained(d); tok.save_pretrained(d)
+        torch.save({"new_lo": lv.new_lo, "new_rows": lv.new_emb.detach().cpu()},
+                   d / "new_token_embeddings.pt")
+
+    best, best_epoch, no_improve = -1.0, -1, 0
     for epoch in range(args.epochs):
         data = build_train(train_rows, sem, cf_map, tok, seed=epoch, max_ctx=args.max_ctx)
         rng = np.random.default_rng(epoch)
@@ -363,13 +372,26 @@ def main():
                 opt.step(); opt.zero_grad()
         opt.step(); opt.zero_grad()
         print(f"epoch {epoch}: loss {rl/nb:.4f} tgt_acc {ra/nb:.4f} {(time.time()-t0)/60:.1f} min", flush=True)
-        raw.save_pretrained(out); tok.save_pretrained(out)
-        torch.save({"new_lo": lv.new_lo, "new_rows": lv.new_emb.detach().cpu()},
-                   out / "new_token_embeddings.pt")
+        save_ckpt(out)                                   # latest
+
         if (epoch + 1) % args.eval_every == 0 or epoch == args.epochs - 1:
             rep = evaluate(raw, lv, sem, trie, tok, dev, device, n=args.eval_n)
+            metric = rep["recall"][200]                  # headline: recall@200
             print("EVAL", json.dumps(rep), flush=True)
             (out / f"eval_epoch{epoch}.json").write_text(json.dumps(rep, indent=2))
+            if metric > best + args.min_delta:
+                best, best_epoch, no_improve = metric, epoch, 0
+                save_ckpt(out / "best")
+                (out / "best" / "eval.json").write_text(json.dumps({"epoch": epoch, **rep}, indent=2))
+                print(f"** new best recall@200 {best:.4f} @ epoch {epoch} -> saved {out}/best", flush=True)
+            else:
+                no_improve += 1
+                print(f"no improvement {no_improve}/{args.patience} "
+                      f"(best {best:.4f} @ epoch {best_epoch})", flush=True)
+                if no_improve >= args.patience:
+                    print(f"early stop at epoch {epoch}; best recall@200 {best:.4f} @ epoch {best_epoch}", flush=True)
+                    break
+    print(f"DONE best recall@200 {best:.4f} @ epoch {best_epoch} (weights in {out}/best)", flush=True)
 
 
 if __name__ == "__main__":
