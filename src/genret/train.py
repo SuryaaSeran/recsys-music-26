@@ -31,16 +31,22 @@ def resolve_device(pref="auto"):
     return "mps" if torch.backends.mps.is_available() else "cpu"
 
 
-def build_model(cfg: GenRetConfig, device: str):
+def build_model(cfg: GenRetConfig, device: str, resume_from: str | None = None):
     tok = AutoTokenizer.from_pretrained(cfg.base)
     sem = SemTokenizer(tok)
     raw = AutoModelForCausalLM.from_pretrained(cfg.base, dtype=getattr(torch, cfg.dtype))
     raw.resize_token_embeddings(len(tok), mean_resizing=False)  # mean_resizing=True OOMs MPS
     lv = attach_lean_vocab(raw, sem.new_lo)
-    lora = LoraConfig(task_type="CAUSAL_LM", r=cfg.lora_r, lora_alpha=cfg.lora_alpha,
-                      lora_dropout=cfg.lora_dropout,
-                      target_modules=["q_proj", "k_proj", "v_proj", "o_proj"])
-    peft_model = get_peft_model(raw, lora)          # injects LoRA in-place; freezes base
+    if resume_from:
+        from peft import PeftModel
+        ck = torch.load(Path(resume_from) / "new_token_embeddings.pt", map_location="cpu")
+        lv.new_emb.data.copy_(ck["new_rows"])
+        peft_model = PeftModel.from_pretrained(raw, resume_from, is_trainable=True)
+    else:
+        lora = LoraConfig(task_type="CAUSAL_LM", r=cfg.lora_r, lora_alpha=cfg.lora_alpha,
+                          lora_dropout=cfg.lora_dropout,
+                          target_modules=["q_proj", "k_proj", "v_proj", "o_proj"])
+        peft_model = get_peft_model(raw, lora)      # injects LoRA in-place; freezes base
     lv.new_emb.requires_grad_(True)                 # re-enable our new rows
     raw.to(device)
     return raw, peft_model, lv, tok, sem
@@ -60,12 +66,13 @@ def loss_and_acc(raw, lv, batch):
     return loss, acc
 
 
-def train(cfg: GenRetConfig, overfit: int = 0):
+def train(cfg: GenRetConfig, overfit: int = 0, resume_from: str | None = None,
+          start_epoch: int = 0):
     device = resolve_device(cfg.device)
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
 
-    raw, peft_model, lv, tok, sem = build_model(cfg, device)
+    raw, peft_model, lv, tok, sem = build_model(cfg, device, resume_from)
     pad_id = tok.eos_token_id
 
     data = [json.loads(l) for l in open(Path(cfg.data_dir) / "train.jsonl")]
@@ -84,7 +91,7 @@ def train(cfg: GenRetConfig, overfit: int = 0):
     out = Path(cfg.ckpt_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    for epoch in range(cfg.epochs):
+    for epoch in range(start_epoch, start_epoch + cfg.epochs):
         raw.train()
         order = rng.permutation(len(data))
         t0 = time.time()

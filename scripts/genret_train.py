@@ -22,6 +22,8 @@ def main():
     ap.add_argument("--ckpt-dir")
     ap.add_argument("--device", default="auto")
     ap.add_argument("--overfit", type=int, default=0)
+    ap.add_argument("--resume", help="checkpoint dir to continue training from")
+    ap.add_argument("--start-epoch", type=int, default=0, help="epoch number to resume at")
     a = ap.parse_args()
 
     cfg = GenRetConfig(device=a.device)
@@ -30,7 +32,7 @@ def main():
     if a.batch_size: cfg.batch_size = a.batch_size
     if a.grad_accum: cfg.grad_accum = a.grad_accum
     if a.ckpt_dir: cfg.ckpt_dir = a.ckpt_dir
-    train(cfg, overfit=a.overfit)
+    train(cfg, overfit=a.overfit, resume_from=a.resume, start_epoch=a.start_epoch)
 
 
 if __name__ == "__main__":
