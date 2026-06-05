@@ -185,7 +185,7 @@ def build_train(rows, sem, cf_map, tok, seed, max_ctx=256):
     """One terminal example per session (resampled by `seed` each epoch)."""
     rng = np.random.default_rng(seed)
     out = []
-    for row in rows:
+    for row in tqdm(rows, desc=f"build epoch data (seed {seed})", leave=False):
         conv = list(row["conversations"])
         turns = list(iter_music_turns(conv))
         T = sample_terminal([tn for _, _, _, tn in turns], BLIND_TURN_DIST, rng)
