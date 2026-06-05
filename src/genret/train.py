@@ -105,7 +105,7 @@ def train(cfg: GenRetConfig, overfit: int = 0):
         peak = torch.mps.driver_allocated_memory() / 1e9 if device == "mps" else 0
         print(f"epoch {epoch}: loss {run_loss/nb:.4f}  tgt_acc {run_acc/nb:.4f}  "
               f"{(time.time()-t0)/60:.1f} min  mps_peak {peak:.1f}GB")
-        save_checkpoint(peft_model, lv, tok, out)
+        save_checkpoint(peft_model, lv, tok, out / f"epoch{epoch}")   # keep every epoch
 
     drift = (lv.frozen.detach() - frozen_snap).abs().max().item()
     print(f"frozen-embedding max drift (want 0): {drift:.2e}")

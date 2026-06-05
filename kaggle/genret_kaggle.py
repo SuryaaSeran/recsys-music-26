@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from collections import Counter
 from pathlib import Path
@@ -284,7 +285,7 @@ def evaluate(raw, lv, sem, trie, tok, dev, device, pools=(20, 50, 100, 200), n=1
     ex = [dev[i] for i in rng.choice(len(dev), min(n, len(dev)), replace=False)]
     raw.eval()
     rec = []
-    for e in tqdm(ex, desc="eval"):
+    for e in tqdm(ex, desc="eval", file=sys.stdout, mininterval=15):
         pool = generate_pool(raw, lv, sem, trie, tok, e["context"], device, pool=max(pools))
         ids = [p[0] for p in pool]
         rank = ids.index(e["gold_track_id"]) + 1 if e["gold_track_id"] in ids else None
@@ -361,7 +362,8 @@ def main():
         rng = np.random.default_rng(epoch)
         order = rng.permutation(len(data))
         raw.train(); t0 = time.time(); rl = ra = nb = 0; opt.zero_grad()
-        pbar = tqdm(range(0, len(order), args.batch_size), desc=f"epoch {epoch}")
+        pbar = tqdm(range(0, len(order), args.batch_size), desc=f"epoch {epoch}",
+                    file=sys.stdout, mininterval=10)   # stdout so Kaggle shows it live
         for step, i in enumerate(pbar):
             b = {k: v.to(device) for k, v in
                  collate([data[j] for j in order[i:i + args.batch_size]], pad).items()}
