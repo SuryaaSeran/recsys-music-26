@@ -36,10 +36,13 @@ class GenRetriever:
         sem = SemTokenizer(tok)                       # tokens already present -> grid resolves
         raw = AutoModelForCausalLM.from_pretrained(base, dtype=getattr(torch, dtype))
         raw.resize_token_embeddings(len(tok), mean_resizing=False)
-        lv = attach_lean_vocab(raw, sem.new_lo)
+        model = PeftModel.from_pretrained(raw, ckpt_dir)   # loads LoRA (+ may restore a full lm_head)
+        # Re-attach the lean split head AFTER peft, overriding any restored full head, so
+        # generation never builds [beams, prompt_len, vocab] logits.
+        inner = model.base_model.model
+        lv = attach_lean_vocab(inner, sem.new_lo)
         ck = torch.load(Path(ckpt_dir) / "new_token_embeddings.pt", map_location="cpu")
         lv.new_emb.data.copy_(ck["new_rows"])
-        model = PeftModel.from_pretrained(raw, ckpt_dir)
         model.eval().to(device)
         trie = CfTrie.build(sem)
         return cls(model, tok, sem, trie, device)
@@ -49,7 +52,11 @@ class GenRetriever:
                       diverse: bool = False) -> list[Candidate]:
         nb = num_beams or max(pool_size, 256)         # >=233 so step-1 is exhaustive
         enc = self.tok(context, return_tensors="pt").to(self.device)
-        kw = dict(num_beams=nb, num_return_sequences=pool_size, max_new_tokens=5,
+        plen = enc.input_ids.shape[1]
+        # Use ONLY max_length (= prompt + 5 cf/eos tokens). If max_new_tokens is also set
+        # it takes precedence and the KV cache pre-allocates to generation_config.max_length
+        # (131072) x beams -> 134GB on MPS.
+        kw = dict(num_beams=nb, num_return_sequences=pool_size, max_length=plen + 5,
                   prefix_allowed_tokens_fn=self.fn, do_sample=False,
                   return_dict_in_generate=True, output_scores=True, length_penalty=1.0,
                   pad_token_id=self.tok.eos_token_id)

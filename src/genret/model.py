@@ -52,6 +52,10 @@ class _SplicedHead(nn.Module):
         self._lv = [lv]                               # list -> not re-registered (no dup param)
 
     def forward(self, h):
+        # Only ever called during generation (training uses lv.head on gathered positions).
+        # Slice to the last position so prefill doesn't build [beams, prompt_len, vocab].
+        if h.dim() == 3 and h.shape[1] > 1:
+            h = h[:, -1:, :]
         return self._lv[0].head(h)
 
 

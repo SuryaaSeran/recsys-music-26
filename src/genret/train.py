@@ -36,13 +36,15 @@ def build_model(cfg: GenRetConfig, device: str, resume_from: str | None = None):
     sem = SemTokenizer(tok)
     raw = AutoModelForCausalLM.from_pretrained(cfg.base, dtype=getattr(torch, cfg.dtype))
     raw.resize_token_embeddings(len(tok), mean_resizing=False)  # mean_resizing=True OOMs MPS
-    lv = attach_lean_vocab(raw, sem.new_lo)
     if resume_from:
         from peft import PeftModel
+        peft_model = PeftModel.from_pretrained(raw, resume_from, is_trainable=True)
+        # attach AFTER peft so the lean head/embedding override any restored full layers
+        lv = attach_lean_vocab(peft_model.base_model.model, sem.new_lo)
         ck = torch.load(Path(resume_from) / "new_token_embeddings.pt", map_location="cpu")
         lv.new_emb.data.copy_(ck["new_rows"])
-        peft_model = PeftModel.from_pretrained(raw, resume_from, is_trainable=True)
     else:
+        lv = attach_lean_vocab(raw, sem.new_lo)
         lora = LoraConfig(task_type="CAUSAL_LM", r=cfg.lora_r, lora_alpha=cfg.lora_alpha,
                           lora_dropout=cfg.lora_dropout,
                           target_modules=["q_proj", "k_proj", "v_proj", "o_proj"])
@@ -121,7 +123,11 @@ def train(cfg: GenRetConfig, overfit: int = 0, resume_from: str | None = None,
 
 def save_checkpoint(peft_model, lv, tok, out_dir):
     out = Path(out_dir)
-    peft_model.save_pretrained(out)                  # LoRA adapter (adapter_config.json + weights)
+    # save_embedding_layers=False: do NOT bundle the resized embedding into the adapter,
+    # else PeftModel.from_pretrained restores a full tied lm_head and clobbers our lean
+    # split head (-> [beams, prompt_len, vocab] logits = 134GB). We persist the new rows
+    # separately below.
+    peft_model.save_pretrained(out, save_embedding_layers=False)
     tok.save_pretrained(out)
     torch.save({"new_lo": lv.new_lo, "new_rows": lv.new_emb.detach().cpu()},
                out / "new_token_embeddings.pt")
