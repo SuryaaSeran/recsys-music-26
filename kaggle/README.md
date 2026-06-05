@@ -18,6 +18,7 @@ runtime; nothing extra to upload.)
 ## 3. Cells
 ```python
 !pip -q install -U "transformers>=4.45" peft accelerate datasets
+!pip -q uninstall -y torchao   # Kaggle ships torchao 0.10 which breaks peft's LoRA dispatch; unused here
 
 !python genret_kaggle.py \
     --sem /kaggle/input/reccys-cf-ids/semantic_ids.json \
