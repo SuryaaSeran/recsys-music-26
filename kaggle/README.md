@@ -12,7 +12,8 @@ cf-bpr 4-code tuple (the targets + the decode trie). ~tens of MB.
 runtime; nothing extra to upload.)
 
 ## 2. New Kaggle Notebook
-- Settings: **Accelerator = GPU T4 x2** (or P100), **Internet = ON**.
+- Settings: **Accelerator = GPU T4 x2** (use **T4**, NOT P100 -- current PyTorch dropped
+  sm_60/P100 support, so P100 fails with "no kernel image is available"), **Internet = ON**.
 - Add data: your `reccys-cf-ids` dataset, and upload `genret_kaggle.py` (or paste it).
 
 ## 3. Cells
