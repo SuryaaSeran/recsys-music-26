@@ -15,6 +15,7 @@ Run on Kaggle (GPU T4/P100, Internet ON):
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -37,6 +38,7 @@ CF_TOKEN = "<cf_{l}_{c}>"
 HIST_OPEN, HIST_CLOSE, GEN = "<hist>", "</hist>", "<gen>"
 BLIND_TURN_DIST = {1: 20, 2: 15, 3: 10, 4: 5, 5: 8, 6: 9, 7: 8, 8: 5}
 MOVES = "MOVES_TOWARD_GOAL"
+AMP_DTYPE = None   # set in main: fp16 (Turing) / bf16 (Ampere) / None (cpu)
 
 # --------------------------------------------------------------------------- tokens
 class SemTokenizer:
@@ -129,7 +131,10 @@ class _Emb(nn.Module):
 
 class _Head(nn.Module):
     def __init__(self, lv): super().__init__(); self._lv = [lv]
-    def forward(self, h): return self._lv[0].head(h)
+    def forward(self, h):
+        if h.dim() == 3 and h.shape[1] > 1:        # generation: only the last position
+            h = h[:, -1:, :]
+        return self._lv[0].head(h)
 
 
 def attach_lean_vocab(model, new_lo):
@@ -265,10 +270,13 @@ def loss_and_acc(raw, lv, b):
 @torch.no_grad()
 def generate_pool(raw, lv, sem, trie, tok, context, device, pool=200, num_beams=256):
     enc = tok(context, return_tensors="pt").to(device)
-    out = raw.generate(**enc, num_beams=num_beams, num_return_sequences=pool, max_new_tokens=5,
-                       prefix_allowed_tokens_fn=trie.fn(), do_sample=False,
-                       return_dict_in_generate=True, output_scores=True, length_penalty=1.0,
-                       pad_token_id=tok.eos_token_id)
+    plen = enc.input_ids.shape[1]
+    amp = torch.autocast("cuda", dtype=AMP_DTYPE) if AMP_DTYPE else contextlib.nullcontext()
+    with amp:
+        out = raw.generate(**enc, num_beams=num_beams, num_return_sequences=pool,
+                           max_length=plen + 5, prefix_allowed_tokens_fn=trie.fn(),
+                           do_sample=False, return_dict_in_generate=True, output_scores=True,
+                           length_penalty=1.0, pad_token_id=tok.eos_token_id)
     gen = out.sequences[:, enc.input_ids.shape[1]:]
     trans = raw.compute_transition_scores(out.sequences, out.scores, out.beam_indices,
                                           normalize_logits=True)
@@ -337,13 +345,17 @@ def main():
     from datasets import load_dataset
     from transformers import AutoTokenizer
 
+    global AMP_DTYPE
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Params stay fp32 (so GradScaler can unscale); autocast does the fast low-precision matmuls.
+    # T4/Turing (cap<8) has no bf16 tensor cores -> autocast fp16; Ampere+ -> bf16 (no scaler needed).
+    load_dtype = torch.float32
     if device == "cuda":
         cap = torch.cuda.get_device_capability()[0]
-        dtype = torch.bfloat16 if cap >= 8 else torch.float16  # Turing/T4 has no bf16 tensor cores
+        AMP_DTYPE = torch.float16 if cap < 8 else torch.bfloat16
     else:
-        dtype = torch.float32
-    print(f"device={device} dtype={dtype} cap={torch.cuda.get_device_capability() if device=='cuda' else '-'}", flush=True)
+        AMP_DTYPE = None
+    print(f"device={device} amp={AMP_DTYPE} cap={torch.cuda.get_device_capability() if device=='cuda' else '-'}", flush=True)
 
     tok = AutoTokenizer.from_pretrained(BASE_MODEL)
     sem = SemTokenizer(tok)
@@ -357,17 +369,17 @@ def main():
     print(f"train_sessions={len(train_rows)}  dev_examples={len(dev)} "
           f"ceiling={np.mean([e['gold_has_cf'] for e in dev]):.4f}", flush=True)
 
-    raw, peft_model, lv = build_model(tok, sem, dtype, device)
+    raw, peft_model, lv = build_model(tok, sem, load_dtype, device)
     params = [p for p in raw.parameters() if p.requires_grad]
     print(f"trainable={sum(p.numel() for p in params)/1e6:.2f}M", flush=True)
     opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=0.0)
-    scaler = torch.amp.GradScaler("cuda", enabled=(dtype == torch.float16))  # fp16 needs loss scaling
+    scaler = torch.amp.GradScaler("cuda", enabled=(AMP_DTYPE == torch.float16))  # fp16 needs loss scaling
     pad = tok.eos_token_id
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
 
     def save_ckpt(d):
         d = Path(d); d.mkdir(parents=True, exist_ok=True)
-        peft_model.save_pretrained(d); tok.save_pretrained(d)   # LoRA adapter only
+        peft_model.save_pretrained(d, save_embedding_layers=False); tok.save_pretrained(d)
         torch.save({"new_lo": lv.new_lo, "new_rows": lv.new_emb.detach().cpu()},
                    d / "new_token_embeddings.pt")
 
@@ -382,7 +394,9 @@ def main():
         for step, i in enumerate(pbar):
             b = {k: v.to(device) for k, v in
                  collate([data[j] for j in order[i:i + args.batch_size]], pad).items()}
-            loss, acc = loss_and_acc(raw, lv, b)
+            amp = torch.autocast("cuda", dtype=AMP_DTYPE) if AMP_DTYPE else contextlib.nullcontext()
+            with amp:
+                loss, acc = loss_and_acc(raw, lv, b)
             scaler.scale(loss / args.grad_accum).backward()
             rl += loss.item(); ra += acc.item(); nb += 1
             if (step + 1) % args.grad_accum == 0:
