@@ -24,6 +24,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from tqdm.auto import tqdm
 
 # ----------------------------------------------------------------------------- config
 BASE_MODEL = "unsloth/Llama-3.2-1B-Instruct"
@@ -283,7 +284,7 @@ def evaluate(raw, lv, sem, trie, tok, dev, device, pools=(20, 50, 100, 200), n=1
     ex = [dev[i] for i in rng.choice(len(dev), min(n, len(dev)), replace=False)]
     raw.eval()
     rec = []
-    for j, e in enumerate(ex):
+    for e in tqdm(ex, desc="eval"):
         pool = generate_pool(raw, lv, sem, trie, tok, e["context"], device, pool=max(pools))
         ids = [p[0] for p in pool]
         rank = ids.index(e["gold_track_id"]) + 1 if e["gold_track_id"] in ids else None
@@ -291,8 +292,6 @@ def evaluate(raw, lv, sem, trie, tok, dev, device, pools=(20, 50, 100, 200), n=1
         rec.append({"hit": {k: bool(rank and rank <= k) for k in pools}, "rank": rank,
                     "has_cf": e["gold_has_cf"], "turn": e["turn_number"],
                     "first_ok": bool(e["gold_cf"] and e["gold_cf"][0] in firsts)})
-        if (j + 1) % 100 == 0:
-            print(f"  eval {j+1}/{len(ex)}", flush=True)
     def R(k, key=lambda r: True):
         s = [r for r in rec if key(r)]
         return round(float(np.mean([r["hit"][k] for r in s])), 4) if s else None
@@ -362,7 +361,8 @@ def main():
         rng = np.random.default_rng(epoch)
         order = rng.permutation(len(data))
         raw.train(); t0 = time.time(); rl = ra = nb = 0; opt.zero_grad()
-        for step, i in enumerate(range(0, len(order), args.batch_size)):
+        pbar = tqdm(range(0, len(order), args.batch_size), desc=f"epoch {epoch}")
+        for step, i in enumerate(pbar):
             b = {k: v.to(device) for k, v in
                  collate([data[j] for j in order[i:i + args.batch_size]], pad).items()}
             loss, acc = loss_and_acc(raw, lv, b)
@@ -370,6 +370,7 @@ def main():
             rl += loss.item(); ra += acc.item(); nb += 1
             if (step + 1) % args.grad_accum == 0:
                 opt.step(); opt.zero_grad()
+            pbar.set_postfix(loss=f"{rl/nb:.3f}", acc=f"{ra/nb:.3f}")
         opt.step(); opt.zero_grad()
         print(f"epoch {epoch}: loss {rl/nb:.4f} tgt_acc {ra/nb:.4f} {(time.time()-t0)/60:.1f} min", flush=True)
         save_ckpt(out)                                   # latest
