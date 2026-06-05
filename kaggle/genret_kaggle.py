@@ -16,10 +16,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from collections import Counter
 from pathlib import Path
+
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # reduce fragmentation
 
 import numpy as np
 import torch
@@ -254,7 +257,8 @@ def loss_and_acc(raw, lv, b):
     bi, ti = mask.nonzero(as_tuple=True)
     logits = lv.head(h[bi, ti - 1])
     tgt = b["labels"][bi, ti]
-    return F.cross_entropy(logits, tgt), (logits.argmax(-1) == tgt).float().mean()
+    # loss in fp32: the full-vocab logits can overflow fp16
+    return F.cross_entropy(logits.float(), tgt), (logits.argmax(-1) == tgt).float().mean()
 
 
 # ----------------------------------------------------------------------------- eval
@@ -284,9 +288,15 @@ def evaluate(raw, lv, sem, trie, tok, dev, device, pools=(20, 50, 100, 200), n=1
     rng = np.random.default_rng(seed)
     ex = [dev[i] for i in rng.choice(len(dev), min(n, len(dev)), replace=False)]
     raw.eval()
+    if device == "cuda":
+        torch.cuda.empty_cache()              # free training fragmentation before beam search
     rec = []
     for e in tqdm(ex, desc="eval", file=sys.stdout, mininterval=15):
-        pool = generate_pool(raw, lv, sem, trie, tok, e["context"], device, pool=max(pools))
+        try:
+            pool = generate_pool(raw, lv, sem, trie, tok, e["context"], device, pool=max(pools))
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            pool = []                         # count as miss rather than crash the run
         ids = [p[0] for p in pool]
         rank = ids.index(e["gold_track_id"]) + 1 if e["gold_track_id"] in ids else None
         firsts = {p[2][0] for p in pool}
@@ -328,8 +338,12 @@ def main():
     from transformers import AutoTokenizer
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.bfloat16 if device == "cuda" else torch.float32
-    print(f"device={device} dtype={dtype}", flush=True)
+    if device == "cuda":
+        cap = torch.cuda.get_device_capability()[0]
+        dtype = torch.bfloat16 if cap >= 8 else torch.float16  # Turing/T4 has no bf16 tensor cores
+    else:
+        dtype = torch.float32
+    print(f"device={device} dtype={dtype} cap={torch.cuda.get_device_capability() if device=='cuda' else '-'}", flush=True)
 
     tok = AutoTokenizer.from_pretrained(BASE_MODEL)
     sem = SemTokenizer(tok)
@@ -347,6 +361,7 @@ def main():
     params = [p for p in raw.parameters() if p.requires_grad]
     print(f"trainable={sum(p.numel() for p in params)/1e6:.2f}M", flush=True)
     opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=0.0)
+    scaler = torch.amp.GradScaler("cuda", enabled=(dtype == torch.float16))  # fp16 needs loss scaling
     pad = tok.eos_token_id
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
 
@@ -368,12 +383,12 @@ def main():
             b = {k: v.to(device) for k, v in
                  collate([data[j] for j in order[i:i + args.batch_size]], pad).items()}
             loss, acc = loss_and_acc(raw, lv, b)
-            (loss / args.grad_accum).backward()
+            scaler.scale(loss / args.grad_accum).backward()
             rl += loss.item(); ra += acc.item(); nb += 1
             if (step + 1) % args.grad_accum == 0:
-                opt.step(); opt.zero_grad()
+                scaler.step(opt); scaler.update(); opt.zero_grad()
             pbar.set_postfix(loss=f"{rl/nb:.3f}", acc=f"{ra/nb:.3f}")
-        opt.step(); opt.zero_grad()
+        scaler.step(opt); scaler.update(); opt.zero_grad()
         print(f"epoch {epoch}: loss {rl/nb:.4f} tgt_acc {ra/nb:.4f} {(time.time()-t0)/60:.1f} min", flush=True)
         save_ckpt(out)                                   # latest
 
