@@ -160,6 +160,28 @@ parser.add_argument("--skip_no_progress", action="store_true",
                     help="Drop turns where gold is DOES_NOT_MOVE_TOWARD_GOAL entirely "
                          "from the feature dump (no rows emitted). More aggressive than "
                          "--progress_aware which keeps the turn but zeros the gold label.")
+parser.add_argument("--weak_does_not", action="store_true",
+                    help="DOES_NOT gold = label 1 (weak positive, gain 1 with --soft_labels), "
+                         "MOVES gold = label 2 (gain 3). Same-artist of DOES_NOT gold is NOT "
+                         "credited. Requires --soft_labels and is incompatible with "
+                         "--skip_no_progress. Matches the spec: 'keep DOES_NOT as weak positive'.")
+parser.add_argument("--anchor_v8d", action="store_true",
+                    help="Use the v8d role-tagged anchor format for tt_query "
+                         "([PROFILE] / [GOAL] / [Ti] / [NOW] with REACTION labels). "
+                         "Required when running inference with models/twotower_v8d.")
+parser.add_argument("--semantic_ids_dir", default="cache/semantic_ids/runC2_attributes_L2C64",
+                    help="Directory containing track_ids.npy + semantic_ids.npy from "
+                         "RQ-VAE training. Used by the 4 Stage-1 semantic-ID match features. "
+                         "Set to '' to disable (features default to 0).")
+parser.add_argument("--sasrec_ckpt", default="",
+                    help="Path to trained SASRec checkpoint. When set, Stage 3 semantic-bucket "
+                         "recall expansion is enabled: predict top-K L0 codes from history and "
+                         "add all tracks in those buckets to the candidate pool.")
+parser.add_argument("--sasrec_top_k_l0", type=int, default=3,
+                    help="Number of L0 buckets to expand via SASRec prediction (Stage 3).")
+parser.add_argument("--sasrec_max_cands", type=int, default=0,
+                    help="Cap on Stage 3 SASRec candidates added per turn (0 = no cap). "
+                         "Use ~500 for feature dump to keep LTR array within 16GB RAM.")
 parser.add_argument("--use_goal_progress", action="store_true",
                     help="H1+H3: use goal_progress_assessments at inference to filter "
                          "rejected tracks from retrieval seeds (H1) and optionally modulate "
@@ -192,6 +214,13 @@ args = parser.parse_args()
 
 if args.ltr_model and args.ltr_neural:
     raise ValueError("--ltr_model and --ltr_neural are mutually exclusive.")
+
+if args.weak_does_not:
+    if not args.soft_labels:
+        raise ValueError("--weak_does_not requires --soft_labels (uses label_gain [0,1,3]).")
+    if args.skip_no_progress:
+        raise ValueError("--weak_does_not is incompatible with --skip_no_progress "
+                         "(it keeps DOES_NOT turns as weak positives).")
 
 BM25_CACHE = "cache/bm25/track_metadata"
 
@@ -249,6 +278,89 @@ def clean_query(text: str) -> str:
     return re.sub(r"\s+", " ", _FILLER.sub(" ", text)).strip()
 
 
+# T1.2 — entity keyword catalogs for goal/Q_t parsing.
+# Genres, moods, instruments are matched case-insensitively as whole-word.
+_T12_GENRES = {
+    "rock", "pop", "jazz", "blues", "country", "folk", "hip hop", "hip-hop",
+    "rap", "r&b", "soul", "funk", "disco", "electronic", "edm", "house",
+    "techno", "trance", "dubstep", "drum and bass", "ambient", "classical",
+    "metal", "punk", "indie", "alternative", "reggae", "ska", "latin",
+    "salsa", "bossa nova", "world", "gospel", "musical", "soundtrack",
+    "k-pop", "j-pop", "bollywood", "afrobeat",
+}
+_T12_MOODS = {
+    "chill", "relax", "relaxing", "calm", "mellow", "soothing", "sad",
+    "melancholy", "melancholic", "happy", "joyful", "cheerful", "upbeat",
+    "energetic", "energizing", "uplifting", "dark", "moody", "angry",
+    "aggressive", "intense", "dramatic", "romantic", "love", "sexy",
+    "sensual", "dreamy", "ethereal", "nostalgic", "epic",
+}
+_T12_INSTRUMENTS = {
+    "guitar", "piano", "violin", "drums", "bass", "saxophone", "sax",
+    "trumpet", "synth", "synthesizer", "vocals", "vocal", "acoustic",
+    "electric", "cello", "flute", "harp", "harmonica", "banjo", "ukulele",
+    "organ", "keyboard", "strings",
+}
+# Sorted longest-first for greedy matching of multi-word phrases ("hip hop" before "hip").
+_T12_GENRES_SORTED = sorted(_T12_GENRES, key=len, reverse=True)
+_T12_MOODS_SORTED  = sorted(_T12_MOODS,  key=len, reverse=True)
+_T12_INSTR_SORTED  = sorted(_T12_INSTRUMENTS, key=len, reverse=True)
+
+# Era patterns. Match "1990s", "90s", "nineties", "1990-1999", "1990 to 1999", bare 4-digit years.
+_T12_DECADE_WORD = {
+    "forties": (1940, 1949), "fifties": (1950, 1959), "sixties": (1960, 1969),
+    "seventies": (1970, 1979), "eighties": (1980, 1989), "nineties": (1990, 1999),
+}
+_T12_DECADE_NUM = re.compile(r"\b(19[2-9]0|20[0-2]0)s?\b")
+_T12_SHORT_DECADE = re.compile(r"\b([2-9]0)s\b")  # 90s, 80s, etc.
+_T12_YEAR_RANGE = re.compile(r"\b(19[0-9]{2}|20[0-2][0-9])\s*[-–to]+\s*(19[0-9]{2}|20[0-2][0-9])\b")
+_T12_BARE_YEAR  = re.compile(r"\b(19[2-9][0-9]|20[0-2][0-9])\b")
+
+
+def t12_parse_era(text: str) -> tuple[bool, float, tuple[int, int] | None]:
+    """Return (has_era, center_year, (lo, hi) or None).
+    Picks the FIRST recognizable era marker in priority order: range, decade, bare year."""
+    if not text:
+        return False, 0.0, None
+    t = text.lower()
+    m = _T12_YEAR_RANGE.search(t)
+    if m:
+        lo, hi = int(m.group(1)), int(m.group(2))
+        if lo > hi: lo, hi = hi, lo
+        return True, (lo + hi) / 2.0, (lo, hi)
+    for word, (lo, hi) in _T12_DECADE_WORD.items():
+        if word in t:
+            return True, (lo + hi) / 2.0, (lo, hi)
+    m = _T12_DECADE_NUM.search(t)
+    if m:
+        d = int(m.group(1))
+        return True, d + 4.5, (d, d + 9)
+    m = _T12_SHORT_DECADE.search(t)
+    if m:
+        d_short = int(m.group(1))
+        d = 1900 + d_short if d_short >= 20 else 2000 + d_short
+        return True, d + 4.5, (d, d + 9)
+    m = _T12_BARE_YEAR.search(t)
+    if m:
+        y = int(m.group(1))
+        return True, float(y), (y, y)
+    return False, 0.0, None
+
+
+def t12_count_keywords(text: str, sorted_kw_list: list[str]) -> tuple[int, set[str]]:
+    """Count whole-word occurrences of any keyword in sorted_kw_list (longest-first)."""
+    if not text:
+        return 0, set()
+    t = " " + text.lower() + " "
+    found: set[str] = set()
+    for kw in sorted_kw_list:
+        # whole-word: surround with spaces / punctuation
+        pat = re.compile(r"(?<![a-z0-9])" + re.escape(kw) + r"(?![a-z0-9])")
+        if pat.search(t):
+            found.add(kw)
+    return len(found), found
+
+
 print("Loading track metadata...")
 meta_ds = load_dataset("talkpl-ai/TalkPlayData-Challenge-Track-Metadata")
 all_tracks = concatenate_datasets([meta_ds["all_tracks"], meta_ds["test_tracks"]])
@@ -268,6 +380,17 @@ del _pop_vals
 print(f"Popularity percentile lookup: {len(popularity_pctile):,} tracks")
 
 # Goal category integer encoding — built after sessions load (see below sessions assignment)
+
+# Per-track id lookups for T1.3/T1.4 (artist_id, album_id based features).
+# tid_to_artist_ids[tid] is a SORTED tuple so a deterministic "primary" id is the first
+# element (needed by within-artist grouping). tid_to_album_ids likewise.
+tid_to_artist_ids: dict[str, tuple] = {}
+tid_to_album_ids: dict[str, tuple] = {}
+for _tid, _row in metadata_dict.items():
+    _aids = sorted(a for a in (_row.get("artist_id") or []) if a)
+    _alids = sorted(a for a in (_row.get("album_id") or []) if a)
+    tid_to_artist_ids[_tid] = tuple(_aids)
+    tid_to_album_ids[_tid] = tuple(_alids)
 
 # Artist -> tracks dictionary (lowercased, capped, deterministic order)
 artist_to_tids: dict[str, list[str]] = {}
@@ -341,6 +464,85 @@ def get_track_name_artist(tid):
     return f"{name} {artist}".strip()
 
 
+def get_track_short_dash(tid):
+    """'title – artist' for v8d anchor REC: slot."""
+    row = metadata_dict.get(tid, {})
+    name = (row.get("track_name") or [""])[0]
+    artist = (row.get("artist_name") or [""])[0]
+    if name and artist:
+        return f"{name} – {artist}"
+    return (name or artist or "").strip()
+
+
+_V8D_REACTION_LABEL = {
+    "MOVES_TOWARD_GOAL": "liked",
+    "DOES_NOT_MOVE_TOWARD_GOAL": "rejected",
+    None: "unknown",
+    "": "unknown",
+}
+
+
+def build_anchor_v8d(profile: dict, goal_text: str, specificity: str,
+                     music_history_v8d: list, music_history_labels: list,
+                     text_history: list, current_query: str,
+                     tokenizer_count_fn, max_tokens: int = 510) -> str:
+    """Role-tagged anchor matching build_twotower_v8d_data.py.
+
+    music_history_v8d: list of (tid, turn_number) for all prior music turns.
+    music_history_labels: parallel list of gpa labels for those turns.
+    text_history: interleaved user/assistant strings 1..t-1.
+    current_query: Q_t.
+    """
+    profile_parts = []
+    for k in ("age_group", "country_code", "gender", "culture", "language"):
+        v = profile.get(k, "")
+        if v:
+            profile_parts.append(str(v))
+    profile_line = "[PROFILE] " + " · ".join(profile_parts) if profile_parts else "[PROFILE]"
+
+    goal_line = f"[GOAL] {goal_text}".strip()
+    if specificity:
+        goal_line += f"  ({specificity})"
+
+    now_line = f"[NOW] USER: {current_query}".strip()
+
+    core_text = profile_line + "\n" + goal_line + "\n" + now_line
+    budget = max_tokens - tokenizer_count_fn("query: " + core_text)
+
+    # Build history blocks: pair each music turn with its preceding user message
+    # and following assistant message via text_history if available. Without exact
+    # alignment we approximate: use raw text_history with stride 2 (user, asst).
+    # For each music turn at history index i, take a user/asst pair if available.
+    blocks = []
+    n_hist = len(music_history_v8d)
+    # text_history grows alongside conversation; we approximate user-i = text_history[2*i],
+    # asst-i = text_history[2*i+1] when present. This matches the training-side
+    # walker reasonably for typical sessions.
+    for i, (tid, tn) in enumerate(music_history_v8d):
+        rec = get_track_short_dash(tid)
+        reaction = _V8D_REACTION_LABEL.get(music_history_labels[i] if i < len(music_history_labels) else "", "unknown")
+        user_msg = text_history[2 * i] if 2 * i < len(text_history) else ""
+        asst_msg = text_history[2 * i + 1] if 2 * i + 1 < len(text_history) else ""
+        blocks.append({"turn": tn, "user": user_msg, "rec": rec, "asst": asst_msg, "reaction": reaction})
+
+    added = []
+    for hb in reversed(blocks):
+        full = (f"[T{hb['turn']}] USER: {hb['user']} | REC: {hb['rec']} "
+                f"| ASST: {hb['asst']} | REACTION: {hb['reaction']}")
+        short = (f"[T{hb['turn']}] USER: {hb['user']} | REC: {hb['rec']} "
+                 f"| REACTION: {hb['reaction']}")
+        for cand in (full, short):
+            cost = tokenizer_count_fn("\n" + cand)
+            if budget >= cost:
+                added.append(cand)
+                budget -= cost
+                break
+
+    added.reverse()
+    parts = [profile_line, goal_line] + added + [now_line]
+    return "query: " + "\n".join(parts)
+
+
 print("Loading BM25 index...")
 bm25_model = bm25s.BM25.load(BM25_CACHE, load_corpus=False)
 with open(f"{BM25_CACHE}/track_ids.json") as f:
@@ -357,11 +559,56 @@ def retrieve_bm25(query, topk):
 print(f"Loading two-tower model: {args.tt_model}")
 tt_model = SentenceTransformer(args.tt_model)
 
+# Tokenizer for v8d anchor budget counting (only needed when --anchor_v8d is set)
+_v8d_count_tokens = None
+if args.anchor_v8d:
+    from transformers import AutoTokenizer as _AT
+    _v8d_tokenizer = _AT.from_pretrained("intfloat/multilingual-e5-base")
+    _v8d_count_tokens = lambda s: len(_v8d_tokenizer.encode(s, add_special_tokens=False))
+
 print(f"Loading two-tower index: {args.tt_index}")
 tt_embs = np.load(f"{args.tt_index}/track_embeddings.npy")
 with open(f"{args.tt_index}/track_ids.json") as f:
     tt_ids = json.load(f)
 tt_id2idx = {tid: i for i, tid in enumerate(tt_ids)}
+
+# Stage 1: load semantic IDs (RQ-VAE) if available.
+# Used by features cand_sem_l0_match_last, cand_sem_leaf_match_last,
+# cand_sem_l0_match_count, cand_sem_l0_match_moves.
+_sem_dir = getattr(args, "semantic_ids_dir", None) or "cache/semantic_ids/runA_metaqwen_L2C64"
+_sem_codes_path = Path(_sem_dir) / "semantic_ids.npy"
+_sem_ids_path   = Path(_sem_dir) / "track_ids.npy"
+tid_to_sem: dict[str, tuple] = {}
+sem_available = False
+if _sem_codes_path.exists() and _sem_ids_path.exists():
+    _sem_codes = np.load(_sem_codes_path)
+    _sem_ids = np.load(_sem_ids_path, allow_pickle=True).tolist()
+    for _i, _t in enumerate(_sem_ids):
+        tid_to_sem[_t] = tuple(int(c) for c in _sem_codes[_i])
+    sem_available = True
+    print(f"Loaded semantic IDs: {len(tid_to_sem):,} tracks × {_sem_codes.shape[1]} levels from {_sem_dir}")
+else:
+    print(f"Semantic IDs not found at {_sem_dir} (features will default to 0)")
+
+# Stage 3: SASRec semantic-bucket recall expansion
+_sasrec_retriever = None
+_sasrec_ckpt = getattr(args, "sasrec_ckpt", "") or ""
+if _sasrec_ckpt and Path(_sasrec_ckpt).exists():
+    import importlib.util as _ilu
+    _sret_spec = _ilu.spec_from_file_location(
+        "semantic_id_retrieval",
+        Path(__file__).parent / "semantic_id_retrieval.py",
+    )
+    _sret_mod = _ilu.module_from_spec(_sret_spec)
+    _sret_spec.loader.exec_module(_sret_mod)
+    SemanticIDRetriever = _sret_mod.SemanticIDRetriever
+    _sasrec_retriever = SemanticIDRetriever(
+        sasrec_ckpt=_sasrec_ckpt,
+        sids_dir=_sem_dir,
+        device="mps",
+        top_k_l0=args.sasrec_top_k_l0,
+    )
+    print(f"SASRec Stage 3 retriever loaded: top_k_l0={args.sasrec_top_k_l0}")
 
 print("Loading Qwen3-Embedding-0.6B...")
 qwen_model = SentenceTransformer("Qwen/Qwen3-Embedding-0.6B", trust_remote_code=True)
@@ -476,10 +723,10 @@ print(
 FEATURE_COLS = [
     "tt_cos", "qm_cos", "ql_cos", "clap_cos", "cf_cos",
     "bm25_signal", "tt_rank_sig", "artist_sig", "nn_sig",
-    "bm25_origin", "artist_origin", "tt_origin", "nn_origin",
-    "cold_user", "pool_size",
+    "bm25_origin", "artist_origin", "tt_origin",
+    "pool_size",
     # Stage 9 additions
-    "qm_origin", "qm_rank_sig", "qm_only",
+    "qm_origin", "qm_rank_sig",
     "nn_source_count", "mean_nn_origin", "mean_nn_rank_sig",
     "dist_to_last", "dist_to_recent_mean",
     "collab_origin", "collab_rank_sig", "collab_score", "collab_source_count",
@@ -509,6 +756,35 @@ FEATURE_COLS = [
     "sim_to_neg_hist_mean",   # TT cosine between candidate and mean of DOES_NOT_MOVE prior tracks
     "artist_in_rejected_set", # 1.0 if candidate artist appears in any prior DOES_NOT_MOVE track
     "n_rejected_in_history",  # count of DOES_NOT_MOVE turns so far, clipped at 10 then /10
+    # Phase G: within-artist disambiguation (indices 48-49). Validated: session
+    # transition separates gold from same-artist distractors 49% vs 23% popularity.
+    "within_artist_trans_rank",  # frac of same-artist pool-mates beaten by session->cand transition (collab_score)
+    "within_artist_pop_rank",    # frac of same-artist pool-mates beaten by global popularity
+    # gpa-corrected session-progress features (requires --use_goal_progress or --skip_no_progress;
+    # valid only after the gpa off-by-one fix; 0 when labels unavailable).
+    "turns_toward_goal",         # count of prior music turns labeled MOVES_TOWARD_GOAL
+    "consecutive_rejections_tail",  # consecutive DOES_NOT_MOVE turns from the tail of music_history
+    # T1.4 — album_id signal (LFM-2b session pool often contains tracks from same album)
+    "same_album_as_last_history",   # binary, candidate shares any album_id with last history track
+    "n_same_album_in_history",      # count of history tracks sharing any album_id with candidate (0..10, clipped)
+    "album_in_recent_window",       # binary, candidate album_id in any of last 3 history tracks
+    # T1.2 — entity-keyword signal from Q_t + goal
+    "q_has_era",                    # binary, Q_t or goal mentions a decade/era
+    "q_era_year",                   # extracted era center year (e.g. 1995.0), 0 if none
+    "q_genre_count",                # count of curated genre keywords in Q_t + goal
+    "q_mood_count",                 # count of mood keywords in Q_t + goal
+    "q_instrument_count",           # count of instrument keywords in Q_t + goal
+    "cand_genre_match",             # candidate tags overlap with Q_t genre keywords
+    "cand_era_match",               # binary, candidate track_year within Q_t era range
+    # Stage 1: semantic-ID match features (RQ-VAE L0/L1 on attributes-qwen3 embeddings, C2)
+    "cand_sem_l0_match_last",       # binary, candidate's L0 == last history track's L0
+    "cand_sem_leaf_match_last",     # binary, candidate's full (L0,L1) == last history track's
+    "cand_sem_l0_match_count",      # count of history tracks sharing candidate's L0 (clipped 10/normalised)
+    "cand_sem_l0_match_moves",      # count of MOVES history tracks sharing candidate's L0 (clipped 10/normalised)
+    # Stage 3 source-calibration features (non-zero only when --sasrec_ckpt is active)
+    "from_sem_bucket",              # binary, candidate entered pool via SASRec L0 bucket expansion
+    "sem_bucket_l0_rank",           # rank of predicted L0 bucket (0=top, normalised /top_k)
+    "sem_bucket_l0_score",          # softmax probability of predicted L0 bucket
 ]
 
 ltr_booster = None
@@ -631,12 +907,23 @@ for item in tqdm(sessions, desc="Sessions"):
     culture     = item.get("user_profile", {}).get("preferred_musical_culture", "")
     _goal_cat   = item.get("conversation_goal", {}).get("category", "")
     goal_category_int = float(GOAL_CATEGORY_MAP.get(_goal_cat, 0))
+    # v8d anchor fields (used when --anchor_v8d)
+    _v8d_profile = {
+        "age_group":    (item.get("user_profile") or {}).get("age_group", "") or "",
+        "country_code": (item.get("user_profile") or {}).get("country_code", "") or "",
+        "gender":       (item.get("user_profile") or {}).get("gender", "") or "",
+        "culture":      culture,
+        "language":     (item.get("user_profile") or {}).get("preferred_language", "") or "",
+    }
+    _v8d_specificity = (item.get("conversation_goal") or {}).get("specificity", "") or ""
     # Goal progress assessment per turn (for --progress_aware / --skip_no_progress / --use_goal_progress)
     _progress_by_turn: dict[int, str] = {}
-    _use_any_progress = args.progress_aware or args.skip_no_progress or args.use_goal_progress or args.infer_progress_labels
+    _use_any_progress = args.progress_aware or args.skip_no_progress or args.use_goal_progress or args.infer_progress_labels or args.weak_does_not
     if _use_any_progress:
         for _a in (item.get("goal_progress_assessments") or []):
-            _progress_by_turn[_a["turn_number"]] = _a.get("goal_progress_assessment", "")
+            # Re-key by T-1: gpa at turn T judges the rec made at T-1, so
+            # _progress_by_turn[turn_num] = assessment for the rec at turn_num.
+            _progress_by_turn[_a["turn_number"] - 1] = _a.get("goal_progress_assessment", "")
     # --infer_progress_labels: fill in missing labels from user follow-up text.
     # Also implies --use_goal_progress so H1/H3 fire automatically.
     if args.infer_progress_labels:
@@ -673,6 +960,7 @@ for item in tqdm(sessions, desc="Sessions"):
 
     music_history: list[str] = []
     music_history_labels: list[str] = []  # parallel to music_history; assessment per turn
+    music_history_turns: list[int] = []   # parallel to music_history; turn_number per entry (for --anchor_v8d)
     text_history:  list[str] = []
 
     for turn in conversations:
@@ -688,6 +976,7 @@ for item in tqdm(sessions, desc="Sessions"):
         if args.blind_mode and turn["content"]:
             music_history.append(turn["content"])
             music_history_labels.append(_progress_by_turn.get(turn["turn_number"], ""))
+            music_history_turns.append(turn["turn_number"])
             continue
 
         turn_number = turn["turn_number"]
@@ -726,23 +1015,34 @@ for item in tqdm(sessions, desc="Sessions"):
             elif args.rejection_drop_threshold > 0 and _n_consec_rej >= args.rejection_drop_threshold:
                 _goal_for_query = ""
 
-        # tt query — compact (v6) or rich (v8+)
-        tt_parts = [latest_user, _goal_for_query, culture]
-        if args.tt_text_turns > 0:
-            # Prior text turns before latest_user (user+assistant interleaved)
-            for txt in text_history[-(args.tt_text_turns + 1):-1]:
-                if txt: tt_parts.append(txt)
-        if args.tt_hist_turns > 2:
-            # v8+: full track text (H1: use _pos_hist)
-            for tid in _pos_hist[-args.tt_hist_turns:]:
-                ft = get_track_text(tid)
-                if ft: tt_parts.append(ft)
+        # tt query — v8d role-tagged anchor or legacy compact/rich format
+        if args.anchor_v8d:
+            # Pair music history with turn numbers + reactions for the v8d builder.
+            _v8d_mh = list(zip(music_history, music_history_turns))
+            tt_query = build_anchor_v8d(
+                _v8d_profile, _goal_for_query, _v8d_specificity,
+                _v8d_mh, music_history_labels,
+                text_history[:-1],  # exclude current user msg (it's the [NOW] slot)
+                latest_user,
+                _v8d_count_tokens,
+            )
         else:
-            # v6 compact: name+artist only (H1: use _pos_hist)
-            for tid in _pos_hist[-args.tt_hist_turns:]:
-                na = get_track_name_artist(tid)
-                if na: tt_parts.append(na)
-        tt_query = " ".join(p for p in tt_parts if p)
+            tt_parts = [latest_user, _goal_for_query, culture]
+            if args.tt_text_turns > 0:
+                # Prior text turns before latest_user (user+assistant interleaved)
+                for txt in text_history[-(args.tt_text_turns + 1):-1]:
+                    if txt: tt_parts.append(txt)
+            if args.tt_hist_turns > 2:
+                # v8+: full track text (H1: use _pos_hist)
+                for tid in _pos_hist[-args.tt_hist_turns:]:
+                    ft = get_track_text(tid)
+                    if ft: tt_parts.append(ft)
+            else:
+                # v6 compact: name+artist only (H1: use _pos_hist)
+                for tid in _pos_hist[-args.tt_hist_turns:]:
+                    na = get_track_name_artist(tid)
+                    if na: tt_parts.append(na)
+            tt_query = " ".join(p for p in tt_parts if p)
 
         # bm25 long query (H1: use _pos_hist for track history seeds)
         bm25_parts = [_goal_for_query, culture]
@@ -792,7 +1092,9 @@ for item in tqdm(sessions, desc="Sessions"):
         collab_src_count: dict[str, int] = {}   # how many source tracks contributed
 
         # --- Encode queries (needed for expansion + scoring) ---
-        tt_emb = tt_model.encode(args.tt_query_prefix + tt_query, normalize_embeddings=True, convert_to_numpy=True)
+        # v8d anchor already includes "query: " prefix; skip args.tt_query_prefix in that path
+        _tt_input = tt_query if args.anchor_v8d else (args.tt_query_prefix + tt_query)
+        tt_emb = tt_model.encode(_tt_input, normalize_embeddings=True, convert_to_numpy=True)
         qwen_emb = qwen_model.encode(QWEN_INSTR + semantic_query,
                                      normalize_embeddings=True, convert_to_numpy=True)
         with torch.no_grad():
@@ -981,6 +1283,27 @@ for item in tqdm(sessions, desc="Sessions"):
                     collab_src_count[tid] = collab_src_count.get(tid, 0) + 1
                     taken += 1
 
+        # Stage 3: SASRec semantic-bucket expansion
+        # sem_bucket_meta[tid] = (l0_rank, l0_prob) for source-calibration features
+        sem_bucket_meta: dict[str, tuple[int, float]] = {}
+        if _sasrec_retriever is not None and music_history:
+            _s3_cands, _s3_meta = _sasrec_retriever.expand(
+                history_tids=music_history,
+                top_k_l0=args.sasrec_top_k_l0,
+                exclude_tids=cands_set,
+            )
+            _s3_cap = args.sasrec_max_cands if args.sasrec_max_cands > 0 else len(_s3_cands)
+            _s3_added = 0
+            for tid in _s3_cands:
+                if _s3_added >= _s3_cap:
+                    break
+                if tid not in cands_set:
+                    cands.append(tid)
+                    cands_set.add(tid)
+                    sources[tid] = {"sem_bucket"}
+                    _s3_added += 1
+            sem_bucket_meta.update({t: v for t, v in _s3_meta.items() if t in cands_set})
+
         # Pool recall tracking
         gold_track = turn["content"]
         if gold_track:  # skip in blind_mode where the synthetic music turn has no gold
@@ -1021,6 +1344,32 @@ for item in tqdm(sessions, desc="Sessions"):
         _user_has_followup = 1.0 if _FOLLOWUP.search(latest_user) else 0.0
         _latest_user_words = set(latest_user.lower().split())
 
+        # T1.2 entity extraction over Q_t + goal text (per-session/turn, candidate-agnostic).
+        _qg_blob = (latest_user or "") + " " + (_goal_for_query or "")
+        _q_has_era_b, _q_era_year_f, _q_era_range = t12_parse_era(_qg_blob)
+        _q_has_era_f = 1.0 if _q_has_era_b else 0.0
+        _q_genre_n, _q_genre_set = t12_count_keywords(_qg_blob, _T12_GENRES_SORTED)
+        _q_mood_n, _q_mood_set = t12_count_keywords(_qg_blob, _T12_MOODS_SORTED)
+        _q_instr_n, _ = t12_count_keywords(_qg_blob, _T12_INSTR_SORTED)
+
+        # Stage 1: semantic-ID precompute (candidate-agnostic per turn).
+        # _sem_last = tuple of (L0, L1, ...) for last history track if any.
+        # _sem_hist_l0_counts = dict L0 -> count over all history tracks.
+        # _sem_moves_l0_counts = dict L0 -> count over MOVES history tracks.
+        _sem_last = None
+        _sem_hist_l0_counts: dict[int, int] = {}
+        _sem_moves_l0_counts: dict[int, int] = {}
+        if sem_available and music_history:
+            _sem_last = tid_to_sem.get(music_history[-1])
+            for _h_tid, _h_lbl in zip(music_history, music_history_labels):
+                _hc = tid_to_sem.get(_h_tid)
+                if _hc is None:
+                    continue
+                _l0 = _hc[0]
+                _sem_hist_l0_counts[_l0] = _sem_hist_l0_counts.get(_l0, 0) + 1
+                if _h_lbl == "MOVES_TOWARD_GOAL":
+                    _sem_moves_l0_counts[_l0] = _sem_moves_l0_counts.get(_l0, 0) + 1
+
         if not cands:
             inference_results.append({
                 "session_id": session_id, "user_id": user_id,
@@ -1029,6 +1378,7 @@ for item in tqdm(sessions, desc="Sessions"):
             })
             music_history.append(turn["content"])
             music_history_labels.append(_progress_by_turn.get(turn_number, ""))
+            music_history_turns.append(turn_number)
             continue
 
         # --- attrs-history (optional) ---
@@ -1096,8 +1446,8 @@ for item in tqdm(sessions, desc="Sessions"):
                 _progress_skipped_turns += 1
                 music_history.append(turn["content"])
                 music_history_labels.append(_progress_by_turn.get(turn_number, ""))
+                music_history_turns.append(turn_number)
                 continue
-            cold_user_flag = 1.0 if cf_all is None else 0.0
             n_cands_local = len(cands)
             feat = np.zeros((n_cands_local, len(FEATURE_COLS)), dtype=np.float32)
             # Phase E: H2 — build history-mean embeddings from labeled prior tracks
@@ -1127,6 +1477,38 @@ for item in tqdm(sessions, desc="Sessions"):
                     _v = np.mean(np.stack(_neg_embs), axis=0)
                     _neg_hist_mean_vec = _v / (np.linalg.norm(_v) + 1e-8)
             lbl  = np.zeros(n_cands_local, dtype=np.int8)
+            # Phase G: within-artist relative ranks. Group pool candidates by artist;
+            # rank each by session->candidate transition (collab_score) and by popularity,
+            # relative to its same-artist pool-mates. Solo artists / no-history => 0 (neutral,
+            # no same-artist competition or no transition signal).
+            # T1.3: group by artist_id (cleaner disambiguation than lowercased artist_name).
+            # Use the first artist_id when a track has multiple (collabs/features); fall back
+            # to lowercased artist_name only when artist_id is absent.
+            _artist_grp: dict = {}
+            for _t in cands:
+                _aids = tid_to_artist_ids.get(_t)
+                if _aids:
+                    _ga = _aids[0]  # primary artist_id (first of sorted tuple — deterministic)
+                else:
+                    _ga = ((metadata_dict.get(_t, {}).get("artist_name") or [""])[0] or "").lower()
+                _artist_grp.setdefault(_ga, []).append(_t)
+            _wa_trans: dict = {}
+            _wa_pop: dict = {}
+            for _ga, _grp in _artist_grp.items():
+                _ng = len(_grp)
+                if _ng <= 1:
+                    _wa_trans[_grp[0]] = 0.0; _wa_pop[_grp[0]] = 0.0
+                    continue
+                _ts = {_t: float(collab_score_map.get(_t, 0.0)) for _t in _grp}
+                _any_t = any(v > 0 for v in _ts.values())
+                _ps = {}
+                for _t in _grp:
+                    _pr = metadata_dict.get(_t, {}).get("popularity")
+                    try: _ps[_t] = float(_pr) if _pr is not None else 0.0
+                    except (TypeError, ValueError): _ps[_t] = 0.0
+                for _t in _grp:
+                    _wa_trans[_t] = (sum(1 for o in _grp if _ts[o] < _ts[_t]) / (_ng - 1)) if _any_t else 0.0
+                    _wa_pop[_t] = sum(1 for o in _grp if _ps[o] < _ps[_t]) / (_ng - 1)
             # For soft labels: pre-compute gold artist for partial-credit assignment
             if args.soft_labels:
                 _gmeta = metadata_dict.get(gold_tid, {})
@@ -1147,7 +1529,6 @@ for item in tqdm(sessions, desc="Sessions"):
                 srcs = sources.get(tid, ())
                 qm_rank = qm_rank_map.get(tid)
                 qm_rank_sig_f = (1.0 / np.log2(qm_rank + 2.0)) if qm_rank is not None else 0.0
-                qm_only_f = 1.0 if ("qm" in srcs and "bm25" not in srcs and "tt" not in srcs) else 0.0
                 nn_src_cnt_f = float(nn_src_count.get(tid, 0))
                 mean_nn_rank = mean_nn_rank_map.get(tid)
                 mean_nn_rank_sig_f = (1.0 / np.log2(mean_nn_rank + 2.0)) if mean_nn_rank is not None else 0.0
@@ -1187,6 +1568,73 @@ for item in tqdm(sessions, desc="Sessions"):
                             _cf_dist_last_f = float(_cf_row @ cf_last_vec)
                         if cf_mean_unit_vec is not None:
                             _cf_dist_mean_f = float(_cf_row @ cf_mean_unit_vec)
+                # gpa-corrected session-progress features (non-zero only when labels exist)
+                _turns_toward_f = 0.0
+                _consec_rej_f = 0.0
+                if music_history_labels:
+                    _turns_toward_f = float(sum(
+                        1 for l in music_history_labels if l == "MOVES_TOWARD_GOAL"
+                    ))
+                    _cr = 0
+                    for _l in reversed(music_history_labels):
+                        if _l == "DOES_NOT_MOVE_TOWARD_GOAL":
+                            _cr += 1
+                        else:
+                            break
+                    _consec_rej_f = float(_cr)
+
+                # T1.4 album_id features
+                _cand_albums = tid_to_album_ids.get(tid, ())
+                _cand_album_set = set(_cand_albums)
+                _same_album_last_f = 0.0
+                _n_same_album_hist_f = 0.0
+                _album_recent_f = 0.0
+                if _cand_album_set and music_history:
+                    last_h = music_history[-1]
+                    last_albums = set(tid_to_album_ids.get(last_h, ()))
+                    if _cand_album_set & last_albums:
+                        _same_album_last_f = 1.0
+                    n_match = 0
+                    for h in music_history:
+                        h_albums = set(tid_to_album_ids.get(h, ()))
+                        if _cand_album_set & h_albums:
+                            n_match += 1
+                    _n_same_album_hist_f = float(min(n_match, 10)) / 10.0
+                    recent_window = music_history[-3:]
+                    for h in recent_window:
+                        if _cand_album_set & set(tid_to_album_ids.get(h, ())):
+                            _album_recent_f = 1.0
+                            break
+
+                # T1.2 per-candidate entity matches
+                _cand_genre_match_f = 0.0
+                if _q_genre_set and _tags:
+                    _tags_lower = {t.lower() for t in _tags}
+                    _cand_genre_match_f = float(
+                        len(_q_genre_set & {t for t in _tags_lower if t in _q_genre_set})
+                    )
+                _cand_era_match_f = 0.0
+                if _q_era_range is not None and not np.isnan(_year):
+                    lo, hi = _q_era_range
+                    if lo <= _year <= hi:
+                        _cand_era_match_f = 1.0
+
+                # Stage 1: semantic-ID match features per candidate
+                _sem_l0_match_last_f = 0.0
+                _sem_leaf_match_last_f = 0.0
+                _sem_l0_count_f = 0.0
+                _sem_l0_moves_f = 0.0
+                _cand_sem = tid_to_sem.get(tid) if sem_available else None
+                if _cand_sem is not None:
+                    _cl0 = _cand_sem[0]
+                    if _sem_last is not None:
+                        if _cl0 == _sem_last[0]:
+                            _sem_l0_match_last_f = 1.0
+                        if _cand_sem == _sem_last:
+                            _sem_leaf_match_last_f = 1.0
+                    _sem_l0_count_f = min(_sem_hist_l0_counts.get(_cl0, 0), 10) / 10.0
+                    _sem_l0_moves_f = min(_sem_moves_l0_counts.get(_cl0, 0), 10) / 10.0
+
                 feat[i] = (
                     float(tt_all[idx_tt])   if idx_tt is not None else 0.0,
                     float(qm_all[idx_qm])   if idx_qm is not None else 0.0,
@@ -1200,12 +1648,9 @@ for item in tqdm(sessions, desc="Sessions"):
                     1.0 if "bm25"   in srcs else 0.0,
                     1.0 if "artist" in srcs else 0.0,
                     1.0 if "tt"     in srcs else 0.0,
-                    1.0 if "nn"     in srcs else 0.0,
-                    cold_user_flag,
                     float(n_cands_local),
                     1.0 if "qm" in srcs else 0.0,
                     qm_rank_sig_f,
-                    qm_only_f,
                     nn_src_cnt_f,
                     1.0 if "mean_nn" in srcs else 0.0,
                     mean_nn_rank_sig_f,
@@ -1241,17 +1686,52 @@ for item in tqdm(sessions, desc="Sessions"):
                     _sim_neg_f,
                     _artist_rejected_f,
                     _n_rej_norm_f,
+                    # Phase G: within-artist disambiguation
+                    _wa_trans.get(tid, 0.0),
+                    _wa_pop.get(tid, 0.0),
+                    # gpa-corrected session-progress features
+                    _turns_toward_f,
+                    _consec_rej_f,
+                    # T1.4 album_id signal
+                    _same_album_last_f,
+                    _n_same_album_hist_f,
+                    _album_recent_f,
+                    # T1.2 entity-keyword signal
+                    _q_has_era_f,
+                    _q_era_year_f,
+                    float(_q_genre_n),
+                    float(_q_mood_n),
+                    float(_q_instr_n),
+                    _cand_genre_match_f,
+                    _cand_era_match_f,
+                    # Stage 1: semantic-ID match features (RQ-VAE 64×2)
+                    _sem_l0_match_last_f,
+                    _sem_leaf_match_last_f,
+                    _sem_l0_count_f,
+                    _sem_l0_moves_f,
+                    # Stage 3 source-calibration features
+                    1.0 if tid in sem_bucket_meta else 0.0,
+                    float(sem_bucket_meta[tid][0]) / max(args.sasrec_top_k_l0, 1) if tid in sem_bucket_meta else 0.0,
+                    float(sem_bucket_meta[tid][1]) if tid in sem_bucket_meta else 0.0,
                 )
                 if tid == gold_tid:
-                    # --progress_aware: gold tracks rated DOES_NOT_MOVE get label 0
-                    if args.progress_aware and _is_rejected_gold:
+                    if args.weak_does_not and _is_rejected_gold:
+                        # weak positive: gain 1 with --soft_labels label_gain [0,1,3]
+                        lbl[i] = 1
+                    elif args.progress_aware and _is_rejected_gold:
                         lbl[i] = 0  # treat rejected gold as negative
                     else:
                         lbl[i] = 2 if args.soft_labels else 1
                 elif args.soft_labels and gold_artist:
-                    cand_artist = ((_meta.get("artist_name") or [""])[0] or "").lower()
-                    if cand_artist and cand_artist == gold_artist:
-                        lbl[i] = 1  # same artist, partial credit
+                    # On DOES_NOT turns under --weak_does_not, skip same-artist credit:
+                    # the listener rejected this artist's specific track, so don't reward
+                    # other tracks by the same artist either.
+                    if args.weak_does_not and _is_rejected_gold:
+                        pass
+                    else:
+                        cand_artist = ((_meta.get("artist_name") or [""])[0] or "").lower()
+                        if cand_artist and cand_artist == gold_artist:
+                            lbl[i] = 1  # same artist, partial credit
             if args.write_features:
                 _feat_f32 = feat.astype(np.float32)
                 _X_tmpfile.write(_feat_f32.tobytes())  # stream directly to disk
@@ -1353,6 +1833,7 @@ for item in tqdm(sessions, desc="Sessions"):
 
         music_history.append(turn["content"])
         music_history_labels.append(_progress_by_turn.get(turn_number, ""))
+        music_history_turns.append(turn_number)
 
 Path(args.out_dir).mkdir(parents=True, exist_ok=True)
 out_path = Path(args.out_dir) / f"{args.tid}.json"
@@ -1401,6 +1882,8 @@ if args.write_features and _X_n_rows[0] > 0:
         json.dump({"feature_cols": FEATURE_COLS,
                    "n_turns": len(turn_meta),
                    "n_rows": total_rows,
+                   "semantic_ids_dir": str(_sem_dir),
+                   "sasrec_ckpt": str(_sasrec_ckpt),
                    "turn_meta": turn_meta}, f)
     print(f"Saved features: ({total_rows}, {n_feats}) -> {out}  (sidecar {sidecar})")
     if _progress_total_turns > 0:

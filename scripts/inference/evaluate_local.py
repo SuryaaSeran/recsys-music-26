@@ -94,7 +94,8 @@ for item in sessions:
     progress_by_turn: dict[int, str] = {}
     if args.progress_only:
         for a in (item.get("goal_progress_assessments") or []):
-            progress_by_turn[a["turn_number"]] = a.get("goal_progress_assessment", "")
+            # Re-key by T-1: gpa at turn T judges the rec made at T-1.
+            progress_by_turn[a["turn_number"] - 1] = a.get("goal_progress_assessment", "")
 
     # Find the last music turn number if --last_turn_only
     last_music_turn = None

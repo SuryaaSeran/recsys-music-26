@@ -57,6 +57,10 @@ parser.add_argument("--max_groups",           type=int,   default=0,
                          "loading. Use when X is too large to fit in RAM (e.g. 6K "
                          "session dumps can produce 26K+ groups / 12GB+ X). "
                          "10000 groups ~ 4.5GB X, enough to beat 2K-session underfitting.")
+parser.add_argument("--extra_features", default=None,
+                    help="Optional NPZ with an 'extra' key (N, k) float32 and "
+                         "'feature_names' key to hstack with X after loading. "
+                         "Used for Phase G incremental column augmentation.")
 parser.add_argument("--sweep",                action="store_true")
 parser.add_argument("--save_sweep_dir", default=None,
                     help="If set, save each sweep booster to this directory.")
@@ -134,6 +138,26 @@ if _load_mask is None:
 else:
     X = data["X"][_load_mask].astype(np.float32)
 print(f"  X loaded: {X.shape}")
+nan_count = int(np.isnan(X).sum())
+inf_count = int(np.isinf(X).sum())
+print(f"  NaN in X: {nan_count}  |  Inf in X: {inf_count}")
+if inf_count > 0:
+    raise ValueError(f"Inf values in feature matrix ({inf_count} cells) — check feature construction")
+
+# ── Extra features (--extra_features) ────────────────────────────────────────
+if args.extra_features:
+    print(f"Loading extra features from {args.extra_features}...")
+    _ef = np.load(args.extra_features, allow_pickle=True)
+    _extra = np.array(_ef["extra"], dtype=np.float32)   # (N_total, k)
+    _extra_names = list(_ef["feature_names"])
+    # Apply same row filter that was used on X
+    if _load_mask is None:
+        _extra_filtered = _extra
+    else:
+        _extra_filtered = _extra[_load_mask]
+    X = np.hstack([X, _extra_filtered])
+    feature_cols = feature_cols + _extra_names
+    print(f"  extra features {_extra_names} hstacked -> X: {X.shape}")
 
 # ── Soft labels ───────────────────────────────────────────────────────────────
 # With --soft_labels the dump stores 0/1/2; validate and set label_gain.

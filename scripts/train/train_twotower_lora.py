@@ -72,6 +72,9 @@ parser.add_argument("--max_train", type=int, default=0,
                     help="If >0, cap training set size for a quick sanity run.")
 parser.add_argument("--eval_steps", type=int, default=500)
 parser.add_argument("--logging_steps", type=int, default=100)
+parser.add_argument("--save_total_limit", type=int, default=5,
+                    help="Max checkpoints to keep. Set higher to retain more candidates for "
+                         "post-training best-checkpoint selection.")
 parser.add_argument("--n_hard_negs", type=int, default=1,
                     help="Number of explicit hard negatives to load from JSONL columns "
                          "negative_1..negative_N. Only used when --use_hard_neg is set. "
@@ -167,7 +170,7 @@ training_args = SentenceTransformerTrainingArguments(
     eval_steps=args.eval_steps,
     save_strategy="steps",
     save_steps=args.eval_steps,
-    save_total_limit=2,
+    save_total_limit=args.save_total_limit,
     load_best_model_at_end=False,  # checkpoint reload strips PEFT wrapping
     metric_for_best_model="eval_loss",
     greater_is_better=False,
