@@ -56,6 +56,24 @@ happens at turn t; the feedback is recorded at turn t+1. So:
   gpa, so keep all turns including R_8; the gpa shift only matters when gpa is used as a
   quality/preference label or weight.
 
+## Blind A nDCG@20 ladder (submission scores, primary target)
+
+```
+0.3990  v18 Tier1 (submitted 2026-06-14) ← BEST BLIND A — do not rerank without CE fine-tuned on v8d data
+0.3310  v18 + Qwen3-8B rerank (submitted 2026-06-15) — WORSE: reranker collapses LexDiv (0.0125), judge drops 1.9→1.15
+```
+
+## Why Qwen3-8B reranker hurts on blind A
+
+Qwen3-Reranker-8B is zero-shot and format-agnostic but collapses diversity on this dataset.
+LexDiv dropped from 0.5909 → 0.0125; the reranker selects near-identical tracks across sessions.
+Root cause: the reranker optimises text relevance but the scoring function includes lexical diversity
+as a composite component. The Stage 3 SASRec expansion (L0 bucket) also concentrates candidates in
+narrow semantic neighborhoods, making the diversity collapse worse.
+
+**Do not use zero-shot Qwen3-8B reranker until fine-tuned on TalkPlay distribution.**
+Alternative: fine-tune CE v3 on v8d anchor format data (~6h), then blend at alpha=0.7.
+
 ## Score ladder (full 1000-session dev nDCG@20)
 
 ```
