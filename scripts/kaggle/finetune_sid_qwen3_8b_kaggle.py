@@ -43,9 +43,25 @@ if REPO_DIR.exists():
 subprocess.run(["git", "clone", "--depth=1", REPO_URL, str(REPO_DIR)], check=True)
 print(f"Cloned repo → {REPO_DIR}")
 
+# Install deps
 subprocess.run([sys.executable, "-m", "pip", "install", "-q",
                 "transformers>=4.50", "peft>=0.14", "trl>=0.12",
                 "bitsandbytes>=0.44", "accelerate>=1.0"], check=True)
+
+# Build train.jsonl on Kaggle (197MB — not stored in git)
+train_path = DATA_DIR / "train.jsonl"
+if not train_path.exists():
+    print("Building training data (downloads TalkPlay from HF)...")
+    subprocess.run([
+        sys.executable,
+        str(REPO_DIR / "scripts/train/build_semantic_id_llm_data.py"),
+        "--sids_dir",      str(REPO_DIR / "cache/semantic_ids/runF_v8e_L2C64"),
+        "--descriptions",  str(REPO_DIR / "cache/semantic_ids/runF_v8e_L2C64/bucket_descriptions.json"),
+        "--out_dir",       str(DATA_DIR),
+    ], check=True)
+    print("Training data built.")
+else:
+    print(f"train.jsonl already exists ({train_path.stat().st_size/1e6:.0f} MB)")
 
 import torch
 from datasets import Dataset
