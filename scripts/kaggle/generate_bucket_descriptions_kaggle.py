@@ -34,6 +34,18 @@ try:
 except Exception:
     print("Not on Kaggle or secrets missing — continuing with env vars")
 
+# Clean and re-clone repo so we always have the latest code
+import shutil
+_REPO_DIR = Path("/kaggle/working/repo")
+if _REPO_DIR.exists():
+    shutil.rmtree(_REPO_DIR)
+subprocess.run(
+    ["git", "clone", "--depth=1",
+     "https://github.com/SuryaaSeran/recsys-music-26.git",
+     str(_REPO_DIR)],
+    check=True,
+)
+
 import torch
 from transformers import AutoProcessor, AutoModelForMultimodalLM
 
