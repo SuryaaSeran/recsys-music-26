@@ -1,0 +1,322 @@
+{
+  "0": {
+    "bucket_id": 0,
+    "name": "Nu Metal and Progressive Hard Rock",
+    "description": "This cluster features a heavy blend of nu-metal, progressive metal, and hard rock from the late 90s to early 2010s. The sonic texture is characterized by aggressive distorted guitars, complex technical arrangements, and a wide emotional range spanning from sludge and screamo to symphonic scales."
+  },
+  "1": {
+    "bucket_id": 1,
+    "name": "Experimental Underground Hip-Hop",
+    "description": "This cluster features a gritty blend of industrial, underground, and alternative rap with heavy emphasis on complex lyricism and lo-fi textures. The mood ranges from dark, aggressive distortion to mellow, psychedelic instrumental passages."
+  },
+  "2": {
+    "bucket_id": 2,
+    "name": "Experimental Alternative and Indie",
+    "description": "This eclectic mix blends alternative rock, underground hip-hop, and industrial textures with a heavy emphasis on experimental production. The mood ranges from dark and atmospheric to high-energy punk, characterized by diverse global influences and sample-heavy soundscapes."
+  },
+  "3": {
+    "bucket_id": 3,
+    "name": "Technical and Extreme Metal",
+    "description": "This collection features high-intensity heavy metal ranging from technical death metal and mathcore to melodic death metal and thrash. The tracks are characterized by complex guitar work, aggressive vocals, and a heavy, driving aesthetic typical of the 2000s metal scene."
+  },
+  "4": {
+    "bucket_id": 4,
+    "name": "Indie Folk and Alternative Rock",
+    "description": "This collection blends organic folk textures with moody alternative rock and indie pop elements. The sound is characterized by bittersweet melodies, acoustic instrumentation, and a nostalgic, atmospheric production style."
+  },
+  "5": {
+    "bucket_id": 5,
+    "name": "Eclectic Global Pop & Folk",
+    "description": "This diverse collection blends contemporary country, Latin pop, and acoustic folk with cinematic orchestral scores. The mood shifts between intimate singer-songwriter ballads and upbeat, radio-friendly melodies across various international styles."
+  },
+  "6": {
+    "bucket_id": 6,
+    "name": "2000s Alternative and Post-Hardcore",
+    "description": "This cluster features a high-energy blend of early 2000s alternative rock, post-hardcore, and melodic punk. The sonic texture is characterized by heavy distorted guitars, emotive vocals, and a dynamic range spanning from aggressive grit to polished radio-friendly hooks."
+  },
+  "7": {
+    "bucket_id": 7,
+    "name": "Eclectic Roots and Classics",
+    "description": "This diverse collection spans vintage blues, folk, and country-rock with a focus on soulful, acoustic-driven textures. The mood shifts between melancholic ballads and upbeat retro pop, featuring a wide range of eras from the 1920s to the early 2000s."
+  },
+  "8": {
+    "bucket_id": 8,
+    "name": "Acoustic Folk and Pop",
+    "description": "This cluster features a blend of organic acoustic textures, singer-songwriter sensibilities, and melodic Latin pop. The mood is predominantly mellow, emotional, and atmospheric, ranging from intimate folk to soft contemporary pop."
+  },
+  "9": {
+    "bucket_id": 9,
+    "name": "Acoustic Folk and Pop",
+    "description": "This cluster features a warm, organic sound characterized by acoustic guitars, intimate vocal deliveries, and a blend of indie folk and soft pop. The mood is nostalgic and melancholic, ranging from gentle singer-songwriter pieces to cinematic musical theatre arrangements."
+  },
+  "10": {
+    "bucket_id": 10,
+    "name": "Acoustic Folk and Country",
+    "description": "This collection features a blend of mellow folk, contemporary country, and easy-listening jazz with a focus on singer-songwriter aesthetics. The mood is reflective and organic, characterized by acoustic instrumentation, warm vocal textures, and moderate to slow tempos."
+  },
+  "11": {
+    "bucket_id": 11,
+    "name": "Vintage Soul and Easy Listening",
+    "description": "This eclectic mix blends mid-century crooners, jazz standards, and classic R&B with a smooth, soulful aesthetic. The collection features a warm, nostalgic texture ranging from sophisticated lounge vibes to steady, groove-oriented slow jams."
+  },
+  "12": {
+    "bucket_id": 12,
+    "name": "Classic and Alternative Rock",
+    "description": "This collection spans several decades of guitar-driven music, ranging from raw punk and heavy hard rock to progressive and indie styles. The sonic texture is diverse, featuring crunchy riffs, energetic tempos, and a blend of bluesy grooves and experimental production."
+  },
+  "13": {
+    "bucket_id": 13,
+    "name": "Experimental Electronic & Ambient",
+    "description": "This eclectic collection blends hypnotic ambient textures, trip-hop, and experimental electronic beats with traces of cinematic scores and indie rock. The mood oscillates between dreamy, atmospheric soundscapes and high-energy, sample-heavy production."
+  },
+  "14": {
+    "bucket_id": 14,
+    "name": "Underground and Hardcore Hip-Hop",
+    "description": "This cluster features a gritty blend of 1990s and 2000s boom bap, gangsta rap, and underground production. The sonic texture is characterized by heavy, dusty beats, aggressive lyrical deliveries, and a dark, urban atmosphere."
+  },
+  "15": {
+    "bucket_id": 15,
+    "name": "Modern Extreme and Alternative Metal",
+    "description": "This collection features a heavy blend of death metal, deathcore, and melodic death metal characterized by aggressive vocals and technical precision. The sonic texture ranges from brutal, high-tempo riffs to atmospheric gothic and alternative metal influences from the late 2000s to mid-2010s."
+  },
+  "16": {
+    "bucket_id": 16,
+    "name": "Classic Rock and Blues",
+    "description": "This eclectic mix blends 1960s and 70s classic rock, folk-rock, and blues with easy-listening pop. The sonic texture ranges from raw, soulful blues and high-energy rock anthems to smooth, melodic soft rock and nostalgic oldies."
+  },
+  "17": {
+    "bucket_id": 17,
+    "name": "Eclectic Genre-Bending Mix",
+    "description": "This diverse collection spans multiple decades and styles, ranging from experimental electronica and synth-pop to ska, country, and gospel. The sonic texture is highly varied, blending raw blues, polished pop production, and atmospheric ambient layers."
+  },
+  "18": {
+    "bucket_id": 18,
+    "name": "Melancholic Indie Alternative",
+    "description": "This cluster features a blend of indie rock, dream pop, and alternative styles characterized by a moody, atmospheric production. The tracks lean towards a mid-tempo, emotionally resonant sound with textures ranging from fuzzy guitars to ethereal, spacious arrangements."
+  },
+  "19": {
+    "bucket_id": 19,
+    "name": "Eclectic Alternative and Folk",
+    "description": "This cluster features a diverse mix of indie folk, alternative rock, and soulful ballads characterized by organic instrumentation. The mood is predominantly mellow and introspective, ranging from acoustic singer-songwriter textures to bluesy rock influences."
+  },
+  "20": {
+    "bucket_id": 20,
+    "name": "Hardcore and Punk Rock",
+    "description": "This cluster features high-energy, aggressive music spanning punk, hardcore, and ska-punk from the 70s through the early 2000s. The sonic texture is raw and distorted, characterized by fast tempos, shouted vocals, and heavy, driving guitar riffs."
+  },
+  "21": {
+    "bucket_id": 21,
+    "name": "Experimental Hip-Hop and Electronica",
+    "description": "This eclectic mix blends underground hip-hop, trip-hop, and glitchy electronic textures with elements of drum and bass and alternative rap. The mood shifts between moody, downtempo atmospheres and aggressive, experimental beats characterized by complex production and lyrical depth."
+  },
+  "22": {
+    "bucket_id": 22,
+    "name": "Alternative and Hard Rock",
+    "description": "This collection features a diverse mix of alternative rock, post-punk, and heavy metal from the 2000s and 2010s. The sonic texture ranges from polished melodic hard rock and pop-punk to experimental indie and technical progressive metal."
+  },
+  "23": {
+    "bucket_id": 23,
+    "name": "Eclectic Modern Pop and Ambient",
+    "description": "This diverse collection blends polished mainstream pop and Latin rock with experimental electronic soundscapes and cinematic scores. The mood shifts between upbeat, danceable grooves and minimalist, atmospheric textures designed for relaxation."
+  },
+  "24": {
+    "bucket_id": 24,
+    "name": "Eclectic Alternative Rock",
+    "description": "This cluster features a diverse mix of alternative, indie, and hard rock spanning from the 1970s to the 2010s. The sonic texture blends gritty post-punk and grunge with psychedelic, experimental, and pop-punk influences. The mood shifts between high-energy distortion and atmospheric, moody arrangements."
+  },
+  "25": {
+    "bucket_id": 25,
+    "name": "Eclectic Electronic & Pop",
+    "description": "This diverse collection blends contemporary pop and R&B with various electronic subgenres including house, downtempo, and ambient textures. The mood fluctuates between polished commercial appeal and atmospheric, lounge-inspired soundscapes."
+  },
+  "26": {
+    "bucket_id": 26,
+    "name": "Eclectic Alternative Rock",
+    "description": "This cluster features a diverse blend of alternative, punk, and progressive rock with varying textures from shoegaze to synth-driven pop. The mood shifts between high-energy aggression and atmospheric, moody introspection, characterized by distorted guitars and expansive production."
+  },
+  "27": {
+    "bucket_id": 27,
+    "name": "Diverse Modern Hip-Hop",
+    "description": "This cluster features a wide spectrum of rap styles including underground, alternative, trap, and grime from the 2000s to the late 2010s. The sonic texture shifts between moody, downtempo beats and high-energy, heavy-hitting production."
+  },
+  "28": {
+    "bucket_id": 28,
+    "name": "Eclectic Experimental and Global Fusion",
+    "description": "This diverse collection blends atmospheric electronica, trip-hop, and lounge beats with various global genres like reggae and Latin pop. The sonic texture ranges from moody, cinematic soundscapes to upbeat dance-pop and experimental sampling."
+  },
+  "29": {
+    "bucket_id": 29,
+    "name": "Aggressive Modern Heavy Music",
+    "description": "This cluster features a high-intensity mix of metalcore, hardcore punk, and industrial textures. The sound is characterized by aggressive vocals, distorted guitars, and a blend of electronic elements ranging from trancecore to industrial metal."
+  },
+  "30": {
+    "bucket_id": 30,
+    "name": "Vintage Folk and Easy Listening",
+    "description": "This eclectic collection blends 1960s folk, soft pop, and traditional country with a mellow, nostalgic atmosphere. The sonic texture is defined by acoustic guitars, poetic storytelling, and smooth, expressive vocals across various decades."
+  },
+  "31": {
+    "bucket_id": 31,
+    "name": "Contemporary PBR&B and Neo-Soul",
+    "description": "This collection features a smooth blend of contemporary R&B, neo-soul, and atmospheric alternative pop from the 2010s. The sonic texture is defined by laid-back tempos, sultry vocals, and polished electronic production with soulful, funky undertones."
+  },
+  "32": {
+    "bucket_id": 32,
+    "name": "2000s R&B and Neo-Soul",
+    "description": "This collection blends smooth neo-soul, contemporary R&B, and jazz-influenced pop from the early to mid-2000s. The mood transitions between sultry, laid-back grooves and polished, mid-tempo dance-pop textures."
+  },
+  "33": {
+    "bucket_id": 33,
+    "name": "Experimental Electronic & Alternative",
+    "description": "This cluster features a dark, atmospheric blend of industrial textures, experimental synth-pop, and cinematic electronica. The mood is surreal and brooding, characterized by distorted noise, heavy reverb, and varying tempos ranging from ambient drifts to driving, rhythmic pulses."
+  },
+  "34": {
+    "bucket_id": 34,
+    "name": "Dark Electronic and Industrial",
+    "description": "This cluster features a heavy blend of dark synthwave, industrial techno, and experimental electronic textures. The mood is aggressive and atmospheric, characterized by distorted basslines, cyberpunk aesthetics, and haunting, cinematic undertones."
+  },
+  "35": {
+    "bucket_id": 35,
+    "name": "Atmospheric Electronic & Dance",
+    "description": "This collection blends ethereal ambient textures with modern electronic dance music, ranging from downtempo chillstep to cinematic synthwave. The sonic palette is characterized by lush synthesizers, rhythmic glitch elements, and a moody, immersive atmosphere."
+  },
+  "36": {
+    "bucket_id": 36,
+    "name": "90s and 00s Alternative Rock",
+    "description": "This cluster features a high-energy mix of punk, post-grunge, and progressive hard rock from the 1990s and early 2000s. The sonic texture is defined by distorted guitars, aggressive drumming, and a raw, emotive atmosphere ranging from skate punk to technical metal."
+  },
+  "37": {
+    "bucket_id": 37,
+    "name": "Eclectic Alternative Rock",
+    "description": "This diverse collection spans multiple decades and genres, blending psychedelic, new wave, and indie rock influences. The mood shifts between high-energy guitar anthems, experimental textures, and melodic, atmospheric ballads."
+  },
+  "38": {
+    "bucket_id": 38,
+    "name": "Early 2000s Alternative Rock",
+    "description": "This collection features a blend of indie, post-punk revival, and mainstream alternative rock from the early to mid-2000s. The sonic texture ranges from ethereal shoegaze and lo-fi aesthetics to polished radio-ready ballads and crunchy, blues-infused guitar riffs."
+  },
+  "39": {
+    "bucket_id": 39,
+    "name": "Indie Alternative and Ambient",
+    "description": "This collection blends atmospheric indie rock with ethereal electronic textures and ambient soundscapes. The mood is introspective and dreamy, featuring mid-tempo arrangements that lean into psychedelic and lo-fi aesthetics."
+  },
+  "40": {
+    "bucket_id": 40,
+    "name": "Experimental Alternative and Soundtracks",
+    "description": "This eclectic mix blends indie rock, synthwave, and orchestral scores with experimental textures and krautrock influences. The mood shifts between high-energy punk-infused beats and atmospheric, cinematic soundscapes."
+  },
+  "41": {
+    "bucket_id": 41,
+    "name": "Experimental Electronic and Bass",
+    "description": "This eclectic mix features heavy textures ranging from industrial EBM and complex electro to atmospheric ambient and liquid drum and bass. The sonic palette is dense and experimental, blending high-tempo dance beats with moody, downtempo trip-hop and glitchy production."
+  },
+  "42": {
+    "bucket_id": 42,
+    "name": "Eclectic Contemporary Mix",
+    "description": "This diverse collection spans modern pop, cinematic scores, and lounge-inspired electronics. The mood shifts between atmospheric, melancholic textures and upbeat, commercial radio-friendly melodies."
+  },
+  "43": {
+    "bucket_id": 43,
+    "name": "Acoustic Folk and Country",
+    "description": "This collection features a mellow blend of acoustic-driven folk, country, and soft rock with a focus on organic textures. The mood is predominantly serene and introspective, characterized by stripped-back instrumentation, prominent guitars, and emotive vocals."
+  },
+  "44": {
+    "bucket_id": 44,
+    "name": "Heavy Metal and Hardcore",
+    "description": "This cluster features a high-intensity mix of thrash, groove, and death metal alongside aggressive hardcore punk. The sonic texture is defined by distorted riffs, rapid-fire percussion, and a raw, high-energy atmosphere spanning the 80s through the 2000s."
+  },
+  "45": {
+    "bucket_id": 45,
+    "name": "90s Alternative and Punk",
+    "description": "This cluster features a high-energy blend of punk, alternative rock, and hard rock from the 1980s and 90s. The sonic texture is characterized by gritty guitar riffs, aggressive vocals, and driving tempos."
+  },
+  "46": {
+    "bucket_id": 46,
+    "name": "Modern Metalcore and Hardcore",
+    "description": "This cluster features high-energy blends of metalcore, screamo, and progressive metal characterized by heavy riffs and intense emotional delivery. The sonic texture alternates between technical, aggressive percussion and melodic, atmospheric undertones common in 2010s alternative metal."
+  },
+  "47": {
+    "bucket_id": 47,
+    "name": "Nu Metal and Hard Rock",
+    "description": "This cluster features heavy, aggressive textures ranging from 1970s heavy metal to late 90s nu-metal and post-grunge. It is characterized by high-energy riffs, distorted vocals, and a raw, rebellious mood typical of alternative metal subgenres."
+  },
+  "48": {
+    "bucket_id": 48,
+    "name": "Eclectic Classic and Alternative Rock",
+    "description": "This cluster features a diverse mix of vintage rock, ranging from 1960s psychedelia and 1970s blues-rock to 1990s alternative. The sonic texture blends raw grit, expressive vocals, and melodic piano elements across a wide spectrum of moods."
+  },
+  "49": {
+    "bucket_id": 49,
+    "name": "Eclectic Indie Pop & Ambient",
+    "description": "This cluster features a diverse mix of contemporary indie pop, electronic textures, and atmospheric ambient pieces. The mood ranges from upbeat, danceable production to minimalist piano and cinematic soundscapes."
+  },
+  "50": {
+    "bucket_id": 50,
+    "name": "90s East Coast Hip-Hop",
+    "description": "This collection features gritty, lyric-heavy rap spanning the late 80s through the mid-2000s. It blends boom-bap aesthetics, soulful jazz influences, and raw gangsta rap sensibilities with a heavy emphasis on East Coast production."
+  },
+  "51": {
+    "bucket_id": 51,
+    "name": "Eclectic Electronic & Hip-Hop",
+    "description": "This diverse mix blends contemporary hip-hop, alternative R&B, and various electronic subgenres including house, downtempo, and drum and bass. The mood shifts between laid-back atmospheric textures and high-energy club beats, characterized by a wide dynamic range and modern production."
+  },
+  "52": {
+    "bucket_id": 52,
+    "name": "Modern Underground and Trap",
+    "description": "This cluster features a diverse blend of contemporary hip-hop, ranging from gritty trap and drill to conscious and experimental sounds. The tracks vary in tempo but share a moody, textured production style with influences from soulful, lo-fi, and electronic elements."
+  },
+  "53": {
+    "bucket_id": 53,
+    "name": "Eclectic Soul and Global Pop",
+    "description": "This diverse collection features a blend of smooth R&B, neo-soul, and sophisticated jazz influences from the late 20th and early 21st centuries. The mood is predominantly mellow and romantic, characterized by rich vocal textures, acoustic instrumentation, and a relaxed, laid-back tempo."
+  },
+  "54": {
+    "bucket_id": 54,
+    "name": "Smooth Soul and Jazz",
+    "description": "This collection features a mellow blend of neo-soul, smooth jazz, and classic R&B characterized by warm textures and groovy rhythms. The mood is relaxed and sophisticated, spanning from mid-century cool jazz to late 20th-century urban pop."
+  },
+  "55": {
+    "bucket_id": 55,
+    "name": "Nu-Metal and Alternative Rock",
+    "description": "This cluster features heavy, aggressive textures ranging from industrial and progressive metal to emo-influenced hardcore. The mood is dark and intense, characterized by distorted guitars, dynamic shifts, and a mix of melodic and abrasive vocals."
+  },
+  "56": {
+    "bucket_id": 56,
+    "name": "Modern Progressive and Alternative Metal",
+    "description": "This collection features a heavy mix of progressive metal, post-hardcore, and alternative rock from the 2010s. The sonic texture ranges from technical, complex instrumentation and sludge elements to melodic, emotive hard rock with a moody atmosphere."
+  },
+  "57": {
+    "bucket_id": 57,
+    "name": "Eclectic Pop and Soundtracks",
+    "description": "This diverse collection blends 1990s and 2000s mainstream pop with cinematic scores and international indie styles. The mood shifts from nostalgic, sentimental ballads to ethereal orchestral textures and upbeat dance-pop."
+  },
+  "58": {
+    "bucket_id": 58,
+    "name": "Soulful Pop and Latin Grooves",
+    "description": "This collection blends smooth R&B and neo-soul with vibrant Latin pop and tropical house elements. The mood transitions from moody, atmospheric textures to upbeat, danceable rhythms with a focus on emotive vocals."
+  },
+  "59": {
+    "bucket_id": 59,
+    "name": "2010s Alternative Rock",
+    "description": "This eclectic mix blends indie, psychedelic, and pop-rock elements with a focus on atmospheric textures and moody melodies. It features a variety of tempos ranging from slow, ethereal builds to driving, guitar-heavy arrangements typical of the early-to-mid 2010s."
+  },
+  "60": {
+    "bucket_id": 60,
+    "name": "90s R&B and Hip-Hop",
+    "description": "This cluster features a blend of smooth 90s R&B, neo-soul, and classic hip-hop with jazz-influenced textures. The selection ranges from laid-back, soulful grooves to upbeat dancehall and old-school rap beats."
+  },
+  "61": {
+    "bucket_id": 61,
+    "name": "Indie Folk and Alternative Pop",
+    "description": "This collection features a blend of melancholic folk, dream pop, and earnest indie rock from the late 2000s and 2010s. The sonic texture is characterized by intimate vocals, acoustic instrumentation, and a somber, atmospheric mood."
+  },
+  "62": {
+    "bucket_id": 62,
+    "name": "Contemporary Melodic Hip-Hop",
+    "description": "This collection features a blend of mid-tempo rap, soulful R&B influences, and atmospheric production from the 2010s. The sonic texture combines smooth jazz elements, heavy bass, and moody, reflective moods with polished pop sensibilities."
+  },
+  "63": {
+    "bucket_id": 63,
+    "name": "Contemporary Melodic Pop",
+    "description": "This cluster features a blend of mid-tempo indie pop, Latin ballads, and soft acoustic arrangements. The mood is predominantly reflective and intimate, characterized by clean production and organic textures like piano and acoustic guitar."
+  }
+}
