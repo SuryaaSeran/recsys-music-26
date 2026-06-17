@@ -101,6 +101,18 @@ def build_messages(l0: int) -> list[dict]:
     ]
 
 
+def _extract_content(raw: str) -> str:
+    """Strip thinking tags manually — more robust than processor.parse_response()."""
+    # Gemma 4 thinking format: <|channel>thought\n...\n<channel|>CONTENT<turn|>
+    if "<channel|>" in raw:
+        content = raw.split("<channel|>", 1)[1]
+        if "<turn|>" in content:
+            content = content.split("<turn|>")[0]
+        return content.strip()
+    # No thinking tags — clean up any trailing turn tokens
+    return raw.replace("<turn|>", "").replace("<|turn|>", "").strip()
+
+
 def generate(l0: int) -> dict:
     messages = build_messages(l0)
     inputs = processor.apply_chat_template(
@@ -109,15 +121,15 @@ def generate(l0: int) -> dict:
         return_dict=True,
         return_tensors="pt",
         add_generation_prompt=True,
-        enable_thinking=True,
+        enable_thinking=False,   # off: not needed + 10x faster
     ).to(model.device)
 
     input_len = inputs["input_ids"].shape[-1]
     with torch.no_grad():
-        outputs = model.generate(**inputs, max_new_tokens=512)
-    raw = processor.decode(outputs[0][input_len:], skip_special_tokens=False)
-    parsed = processor.parse_response(raw)           # → {role, content, thinking}
-    return {"raw": raw, "content": parsed.get("content", ""), "thinking": parsed.get("thinking", "")}
+        outputs = model.generate(**inputs, max_new_tokens=200)
+    raw = processor.decode(outputs[0][input_len:], skip_special_tokens=True)
+    content = _extract_content(raw)
+    return {"raw": raw, "content": content, "thinking": ""}
 
 
 def parse_content(content: str) -> tuple[str, str]:
