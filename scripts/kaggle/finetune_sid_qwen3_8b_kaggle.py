@@ -154,28 +154,29 @@ collator = DataCollatorForSeq2Seq(tokenizer, model=model, padding=True, pad_to_m
 
 training_args = TrainingArguments(
     output_dir=str(OUT_DIR),
-    num_train_epochs=3,
-    per_device_train_batch_size=4,
-    per_device_eval_batch_size=4,
-    gradient_accumulation_steps=8,       # effective batch = 32
+    num_train_epochs=2,                  # 2 is plenty for 64-class bucket prediction
+    per_device_train_batch_size=8,       # T4 16GB fits 8 at seq 1024 in 4-bit
+    per_device_eval_batch_size=8,
+    gradient_accumulation_steps=4,       # effective batch = 8*2gpu*4 = 64
     learning_rate=2e-4,
     warmup_steps=100,
     lr_scheduler_type="cosine",
     weight_decay=0.01,
     eval_strategy="steps",
-    eval_steps=200,
+    eval_steps=150,
     save_strategy="steps",
-    save_steps=400,   # must be a round multiple of eval_steps for load_best_model_at_end
+    save_steps=150,
     save_total_limit=2,
     load_best_model_at_end=True,
     metric_for_best_model="eval_loss",
     greater_is_better=False,
-    logging_steps=50,
+    logging_steps=20,                    # log loss every 20 steps so progress is visible
     report_to="none",
     fp16=False,
     bf16=True,
     gradient_checkpointing=True,
     dataloader_num_workers=2,
+    disable_tqdm=False,
 )
 
 trainer = Trainer(
