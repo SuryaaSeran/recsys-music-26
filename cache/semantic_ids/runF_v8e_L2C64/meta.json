@@ -1,0 +1,41 @@
+{
+  "ckpt": "models/rqvae/runF_v8e_L2C64/final_model.pth",
+  "parquet": "third_party/semantic-ids-llm/data/output/TalkPlay_v8e_embeddings.parquet",
+  "n_tracks": 47071,
+  "codebook_quantization_levels": 2,
+  "codebook_size": 64,
+  "item_embedding_dim": 768,
+  "per_level": [
+    {
+      "level": 0,
+      "n_unique": 64,
+      "n_used": 64,
+      "min": 238,
+      "max": 1346,
+      "median": 746,
+      "mean": 735.484375
+    },
+    {
+      "level": 1,
+      "n_unique": 64,
+      "n_used": 64,
+      "min": 218,
+      "max": 1200,
+      "median": 727,
+      "mean": 735.484375
+    }
+  ],
+  "leaf_stats": {
+    "n_unique_ids": 3909,
+    "n_possible_ids": 4096,
+    "tracks_per_id_min": 1,
+    "tracks_per_id_p25": 6,
+    "tracks_per_id_median": 11,
+    "tracks_per_id_p75": 16,
+    "tracks_per_id_p99": 36,
+    "tracks_per_id_max": 93,
+    "singletons": 112,
+    "ids_with_ge10_tracks": 2224,
+    "ids_with_ge50_tracks": 8
+  }
+}
