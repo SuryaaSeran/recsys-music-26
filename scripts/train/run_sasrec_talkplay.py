@@ -49,12 +49,15 @@ def main():
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--run_name", default="sasrec_runA")
     parser.add_argument("--max_lr", type=float, default=1e-3)
+    parser.add_argument("--data_path", default=None,
+                        help="Path to sequence parquet. Defaults to the original runA parquet.")
     args = parser.parse_args()
 
     cfg = SemanticSASRecConfig()
     cfg.dataset = "TalkPlay"
     cfg.data_dir = REPO_ROOT / "data"
-    cfg.data_path = REPO_ROOT / "data" / "output" / "TalkPlay_sequences_with_semantic_ids_train.parquet"
+    cfg.data_path = Path(args.data_path) if args.data_path else \
+        REPO_ROOT / "data" / "output" / "TalkPlay_sequences_with_semantic_ids_train.parquet"
     cfg.checkpoint_dir = Path("models/sasrec") / args.run_name
 
     cfg.num_levels = args.num_levels

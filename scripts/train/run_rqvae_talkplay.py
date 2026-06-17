@@ -49,14 +49,27 @@ def main():
     parser.add_argument("--run_name", default="runA")
     parser.add_argument("--max_lr", type=float, default=3e-4)
     parser.add_argument("--warmup_steps", type=int, default=200)
+    parser.add_argument("--embeddings", default=None,
+                        help="Path to parquet with 'parent_asin' and 'embedding' columns. "
+                             "Defaults to the original Qwen3 1024-dim parquet.")
+    parser.add_argument("--embedding_dim", type=int, default=None,
+                        help="Embedding dimension. Inferred from parquet if not set.")
     args = parser.parse_args()
 
     cfg = RQVAEConfig()
     cfg.category = "TalkPlay"
     cfg.data_dir = REPO_ROOT / "data"
-    cfg.embeddings_path = REPO_ROOT / "data" / "output" / "TalkPlay_items_with_embeddings.parquet"
+    cfg.embeddings_path = Path(args.embeddings) if args.embeddings else \
+        REPO_ROOT / "data" / "output" / "TalkPlay_items_with_embeddings.parquet"
     cfg.checkpoint_dir = Path("models/rqvae") / args.run_name
-    cfg.item_embedding_dim = 1024
+
+    # Infer embedding dim from parquet if not specified
+    if args.embedding_dim is not None:
+        cfg.item_embedding_dim = args.embedding_dim
+    else:
+        import polars as pl
+        _df = pl.read_parquet(str(cfg.embeddings_path), n_rows=1)
+        cfg.item_embedding_dim = len(_df["embedding"][0])
     cfg.codebook_quantization_levels = args.levels
     cfg.codebook_size = args.codes
     cfg.use_kmeans_init = True

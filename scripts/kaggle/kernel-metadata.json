@@ -1,0 +1,14 @@
+{
+  "id": "suryaseran/reccysmusic-bucket-descriptions",
+  "title": "ReccysMusic: Bucket Descriptions via Gemma 4",
+  "code_file": "generate_bucket_descriptions_kaggle.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "dataset_sources": ["suryaseran/reccysmusic-bucket-members"],
+  "competition_sources": [],
+  "kernel_sources": []
+}

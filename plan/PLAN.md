@@ -18,15 +18,14 @@ Quick path for a new session:
 
 ## Active phases
 
-None. All previous phases concluded (see archive/). Next phase TBD.
+Phase 11: nDCG improvement — Stage 3 recall expansion + v8e TT retrain (listener thought).
+See `plan/11_response_and_recall.md` (to be written).
 
 Current state:
 - Dev gate: **0.1684** (Phase D v6, 39-feat LTR) — held since 2026-05-29.
-- Blind A nDCG@20: **0.3701** (v10 H1+H3, v8b retrieval).
+- Blind A nDCG@20: **0.3997** (v19, v8d + Stage 3 SASRec cap=300, submitted 2026-06-15).
 - Blind A composite: **0.4837** (v07, judge 4.4/5).
-- Phase E (46-feat H2 history features) and Phase F (44/45-feat n_sources_norm + bm25_top1,
-  adaptive pool, infer_progress, entity BM25): all below gate. Retrieval ceiling reached
-  on current pool/LTR architecture.
+- v8e TT retrain in progress (adds listener thought T_t^l to anchor history blocks).
 
 ## Data correction: goal_progress_assessment is off by one turn (2026-06-05)
 
@@ -59,8 +58,9 @@ happens at turn t; the feedback is recorded at turn t+1. So:
 ## Blind A nDCG@20 ladder (submission scores, primary target)
 
 ```
-0.3990  v18 Tier1 (submitted 2026-06-14) ← BEST BLIND A — do not rerank without CE fine-tuned on v8d data
-0.3310  v18 + Qwen3-8B rerank (submitted 2026-06-15) — WORSE: reranker collapses LexDiv (0.0125), judge drops 1.9→1.15
+0.3997  v19 v8d+Stage3cap300 (submitted 2026-06-15) ← BEST BLIND A — composite 0.3370, judge 2.0, LexDiv 0.5909
+0.3990  v18 Tier1 (submitted 2026-06-14) — composite 0.3291, judge 1.9, LexDiv 0.5909
+0.3310  v18 + Qwen3-8B rerank (submitted 2026-06-15) — WORSE: reranker collapses LexDiv (0.0125), judge 1.15
 ```
 
 ## Why Qwen3-8B reranker hurts on blind A

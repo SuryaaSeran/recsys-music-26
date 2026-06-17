@@ -485,13 +485,17 @@ _V8D_REACTION_LABEL = {
 def build_anchor_v8d(profile: dict, goal_text: str, specificity: str,
                      music_history_v8d: list, music_history_labels: list,
                      text_history: list, current_query: str,
-                     tokenizer_count_fn, max_tokens: int = 510) -> str:
-    """Role-tagged anchor matching build_twotower_v8d_data.py.
+                     tokenizer_count_fn, max_tokens: int = 510,
+                     user_thought_history: list | None = None) -> str:
+    """Role-tagged anchor matching build_twotower_v8e_data.py.
 
     music_history_v8d: list of (tid, turn_number) for all prior music turns.
     music_history_labels: parallel list of gpa labels for those turns.
     text_history: interleaved user/assistant strings 1..t-1.
     current_query: Q_t.
+    user_thought_history: interleaved thoughts parallel to text_history; user
+        slots contain listener thought (T_t^l), assistant slots are "".
+        When provided, listener thought is added as | LISTENER: ... slot.
     """
     profile_parts = []
     for k in ("age_group", "country_code", "gender", "culture", "language"):
@@ -509,36 +513,62 @@ def build_anchor_v8d(profile: dict, goal_text: str, specificity: str,
     core_text = profile_line + "\n" + goal_line + "\n" + now_line
     budget = max_tokens - tokenizer_count_fn("query: " + core_text)
 
-    # Build history blocks: pair each music turn with its preceding user message
-    # and following assistant message via text_history if available. Without exact
-    # alignment we approximate: use raw text_history with stride 2 (user, asst).
-    # For each music turn at history index i, take a user/asst pair if available.
+    # Build history blocks: pair each music turn with its preceding user message,
+    # assistant message, and listener thought via text_history / user_thought_history.
+    # Approximation: user-i = text_history[2*i], asst-i = text_history[2*i+1].
     blocks = []
-    n_hist = len(music_history_v8d)
-    # text_history grows alongside conversation; we approximate user-i = text_history[2*i],
-    # asst-i = text_history[2*i+1] when present. This matches the training-side
-    # walker reasonably for typical sessions.
     for i, (tid, tn) in enumerate(music_history_v8d):
         rec = get_track_short_dash(tid)
         reaction = _V8D_REACTION_LABEL.get(music_history_labels[i] if i < len(music_history_labels) else "", "unknown")
         user_msg = text_history[2 * i] if 2 * i < len(text_history) else ""
         asst_msg = text_history[2 * i + 1] if 2 * i + 1 < len(text_history) else ""
-        blocks.append({"turn": tn, "user": user_msg, "rec": rec, "asst": asst_msg, "reaction": reaction})
+        # Listener thought: user's thought at turn i (their reaction to prior rec).
+        # Truncate to first sentence, max 200 chars.
+        raw_lt = (user_thought_history[2 * i] if user_thought_history and 2 * i < len(user_thought_history) else "") or ""
+        if raw_lt:
+            end = raw_lt.find(". ")
+            raw_lt = raw_lt[:end + 1] if 0 < end < 200 else raw_lt[:200]
+        blocks.append({"turn": tn, "user": user_msg, "rec": rec, "asst": asst_msg,
+                       "reaction": reaction, "lt": raw_lt})
 
-    added = []
-    for hb in reversed(blocks):
-        full = (f"[T{hb['turn']}] USER: {hb['user']} | REC: {hb['rec']} "
-                f"| ASST: {hb['asst']} | REACTION: {hb['reaction']}")
-        short = (f"[T{hb['turn']}] USER: {hb['user']} | REC: {hb['rec']} "
-                 f"| REACTION: {hb['reaction']}")
-        for cand in (full, short):
+    def _make_candidates(hb: dict) -> tuple[str, str, str]:
+        lt_slot = f" | LISTENER: {hb['lt']}" if hb["lt"] else ""
+        full    = (f"[T{hb['turn']}] USER: {hb['user']} | REC: {hb['rec']} "
+                   f"| ASST: {hb['asst']} | REACTION: {hb['reaction']}{lt_slot}")
+        short   = (f"[T{hb['turn']}] USER: {hb['user']} | REC: {hb['rec']} "
+                   f"| REACTION: {hb['reaction']}{lt_slot}")
+        minimal = (f"[T{hb['turn']}] USER: {hb['user']} | REC: {hb['rec']} "
+                   f"| REACTION: {hb['reaction']}")
+        return full, short, minimal
+
+    def _try_insert(hb: dict, budget: int) -> tuple[str | None, int]:
+        for cand in _make_candidates(hb):
             cost = tokenizer_count_fn("\n" + cand)
             if budget >= cost:
-                added.append(cand)
-                budget -= cost
-                break
+                return cand, budget - cost
+        return None, budget
 
-    added.reverse()
+    # Pruning order: keep T1 (first turn has session-opening context).
+    # Fill budget with T_n .. T_2 (most-recent first), then try T1 last.
+    added_rest: list[str] = []
+    if blocks:
+        block_first = blocks[0]
+        blocks_rest = blocks[1:]
+        for hb in reversed(blocks_rest):
+            text, budget = _try_insert(hb, budget)
+            if text:
+                added_rest.append(text)
+        added_rest.reverse()  # chronological T2..Tn
+
+        added_first: list[str] = []
+        text, budget = _try_insert(block_first, budget)
+        if text:
+            added_first = [text]
+
+        added = added_first + added_rest
+    else:
+        added = []
+
     parts = [profile_line, goal_line] + added + [now_line]
     return "query: " + "\n".join(parts)
 
@@ -962,11 +992,14 @@ for item in tqdm(sessions, desc="Sessions"):
     music_history_labels: list[str] = []  # parallel to music_history; assessment per turn
     music_history_turns: list[int] = []   # parallel to music_history; turn_number per entry (for --anchor_v8d)
     text_history:  list[str] = []
+    user_thought_history: list[str] = []  # parallel to text_history; user thought or "" for asst
 
     for turn in conversations:
         if turn["role"] != "music":
             if turn["role"] in ("user", "assistant"):
                 text_history.append(turn["content"])
+                thought = (turn.get("thought") or "") if turn["role"] == "user" else ""
+                user_thought_history.append(thought)
             continue
 
         # In blind_mode, real (historic) music turns carry gold content; they
@@ -1025,6 +1058,7 @@ for item in tqdm(sessions, desc="Sessions"):
                 text_history[:-1],  # exclude current user msg (it's the [NOW] slot)
                 latest_user,
                 _v8d_count_tokens,
+                user_thought_history=user_thought_history[:-1],
             )
         else:
             tt_parts = [latest_user, _goal_for_query, culture]
@@ -1287,10 +1321,17 @@ for item in tqdm(sessions, desc="Sessions"):
         # sem_bucket_meta[tid] = (l0_rank, l0_prob) for source-calibration features
         sem_bucket_meta: dict[str, tuple[int, float]] = {}
         if _sasrec_retriever is not None and music_history:
+            # Build rejected set: tracks with DOES_NOT labels in this session.
+            _s3_rejected = {
+                t for t, l in zip(music_history, music_history_labels)
+                if l == "DOES_NOT_MOVE_TOWARD_GOAL"
+            } if music_history_labels else None
             _s3_cands, _s3_meta = _sasrec_retriever.expand(
                 history_tids=music_history,
                 top_k_l0=args.sasrec_top_k_l0,
                 exclude_tids=cands_set,
+                history_labels=music_history_labels if music_history_labels else None,
+                rejected_tids=_s3_rejected,
             )
             _s3_cap = args.sasrec_max_cands if args.sasrec_max_cands > 0 else len(_s3_cands)
             _s3_added = 0

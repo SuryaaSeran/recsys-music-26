@@ -2,12 +2,16 @@
 
 Live snapshot. Update only when full 1000-session dev nDCG@20 strictly beats this.
 
-## Blind A best submission: v18 (blind A nDCG@20 = 0.3990, composite 0.3291)
+## Blind A best submission: v19 (blind A nDCG@20 = 0.3997, composite 0.3370)
 
-**Do NOT apply any reranker to this base until CE is retrained on v8d format.**
-Zero-shot Qwen3-8B rerank dropped nDCG@20 to 0.3310 and LexDiv to 0.0125 (diversity collapse).
-v18 prediction file: `exp/inference/blind_a/blind_a_v8d_tier1_v18.json`
-v18 submission zip: `exp/inference/blind_a/submissions/v18_v8d_tier1_template/submission.zip`
+v19 = v18 retrieval + Stage 3 SASRec semantic-bucket expansion (sasrec_runC2_L2C64, cap=300).
+All metrics improved over v18: nDCG +0.0007, judge 1.9→2.0, composite +0.0079. LexDiv unchanged (0.5909).
+
+v19 prediction file: `exp/inference/blind_a/blind_a_v8d_tier1_s3cap300_v19.json`
+v19 submission zip: `exp/inference/blind_a/submissions/v19_v8d_s3cap300/submission.zip`
+
+**Do NOT apply any reranker until CE is retrained on v8d format.**
+Zero-shot rerankers collapse diversity (LexDiv 0.5909 → 0.0125 with Qwen3-8B).
 
 ---
 
@@ -304,14 +308,22 @@ python scripts/inference/run_inference_fusion_recall_expansion.py \
 | lexical_diversity | 0.2045 |
 | Pool recall | 87.42% |
 
-### Blind A (80 sessions, 80 turns)
+### Blind A — v19 (80 sessions, 80 turns)
 | Metric | Value |
 |---|---|
-| **nDCG@20** | **0.3990** |
+| **nDCG@20** | **0.3997** |
 | catalog_diversity | 0.0304 |
 | lexical_diversity | 0.5909 |
+| llm_judge_score | 2.00 / 5 |
+| **composite_score** | 0.3370 |
+
+### Blind A — v18 (previous best, for comparison)
+| Metric | Value |
+|---|---|
+| nDCG@20 | 0.3990 |
+| lexical_diversity | 0.5909 |
 | llm_judge_score | 1.90 / 5 |
-| **composite_score** | 0.3291 |
+| composite_score | 0.3291 |
 
 ### BLINDPROXY_MIXED (dev proxy, 992 MOVES turns)
 | Metric | Value |
@@ -345,11 +357,12 @@ b) Qwen3-8B fine-tuned on TalkPlay (GPU needed)
 
 ## Previous Bests
 
-| Date | Dev nDCG@20 | Blind A nDCG@20 | TT model | LTR |
-|---|---|---|---|---|
-| 2026-06-13 | **0.1864** | **0.3990** | TT v8d (r=32 LoRA) | 60-feat tier1 | ← current |
-| 2026-06-07 | 0.1748 | 0.3182 | TT v8d | 50-feat ltr_v8d |
-| 2026-06-06 | 0.1729 | — | TT v8c (r=32) | 50-feat ltr_v8c_fixed |
-| 2026-05-31 | 0.1615 | 0.3701 | TT v8b | 42-feat H1+H3 |
-| 2026-05-29 | 0.1684 | — | TT v6 | 39-feat LTR Phase D |
-| 2026-05-28 | 0.1653 | — | TT v6 | 29-feat Phase B reg |
+| Date | Dev nDCG@20 | Blind A nDCG@20 | TT model | LTR | Notes |
+|---|---|---|---|---|---|
+| 2026-06-15 | 0.1854 | **0.3997** | TT v8d (r=32 LoRA) | 60-feat tier1 | ← current (v19, +Stage3 cap=300) |
+| 2026-06-13 | **0.1864** | 0.3990 | TT v8d (r=32 LoRA) | 60-feat tier1 | v18, best dev |
+| 2026-06-07 | 0.1748 | 0.3182 | TT v8d | 50-feat ltr_v8d | |
+| 2026-06-06 | 0.1729 | — | TT v8c (r=32) | 50-feat ltr_v8c_fixed | |
+| 2026-05-31 | 0.1615 | 0.3701 | TT v8b | 42-feat H1+H3 | |
+| 2026-05-29 | 0.1684 | — | TT v6 | 39-feat LTR Phase D | |
+| 2026-05-28 | 0.1653 | — | TT v6 | 29-feat Phase B reg | |

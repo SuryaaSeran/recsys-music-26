@@ -138,28 +138,59 @@ class SemanticIDRetriever:
         history_tids: list[str],
         top_k_l0: Optional[int] = None,
         exclude_tids: Optional[set[str]] = None,
+        history_labels: Optional[list[str]] = None,
+        rejected_tids: Optional[set[str]] = None,
     ) -> tuple[list[str], dict[str, tuple[int, float]]]:
         """Return candidates from predicted top-K L0 buckets with calibration scores.
 
+        Args:
+            history_tids: all prior music track IDs in session order.
+            top_k_l0: number of L0 buckets to expand (overrides default).
+            exclude_tids: already-pooled tracks to skip.
+            history_labels: parallel list of gpa labels for history_tids.
+                When provided, SASRec input is filtered to MOVES_TOWARD_GOAL
+                tracks only — avoids predicting buckets near rejected tracks.
+            rejected_tids: set of DOES_NOT track IDs from this session.
+                Their L0 buckets are blacklisted from expansion.
+
         Returns:
             (candidates, meta_map) where meta_map[tid] = (l0_rank, l0_prob)
-            l0_rank: 0-indexed rank of the L0 bucket this candidate came from
-            l0_prob: softmax probability of that L0 bucket
         """
         k = top_k_l0 if top_k_l0 is not None else self.top_k_l0
         if not history_tids:
             return [], {}
 
-        input_ids = self._encode_history(history_tids)
+        # Idea B: filter SASRec input to MOVES tracks only.
+        if history_labels:
+            moves_tids = [
+                t for t, l in zip(history_tids, history_labels)
+                if l == "MOVES_TOWARD_GOAL"
+            ]
+            input_tids = moves_tids if moves_tids else history_tids
+        else:
+            input_tids = history_tids
+
+        input_ids = self._encode_history(input_tids)
         if input_ids is None:
             return [], {}
 
         with torch.no_grad():
             preds = self.model.predict_next_item(input_ids)
             l0_logits = preds["logits_l0"][0]  # (K,)
-            top_result = torch.topk(l0_logits, min(k, self.K))
-            top_l0 = top_result.indices.cpu().tolist()
+            top_result = torch.topk(l0_logits, min(k + len(rejected_tids or []), self.K))
+            top_l0_all = top_result.indices.cpu().tolist()
             l0_probs = torch.softmax(l0_logits, dim=-1).cpu().tolist()
+
+        # Idea C: blacklist L0 buckets that contain rejected tracks.
+        rejected_l0: set[int] = set()
+        if rejected_tids:
+            for tid in rejected_tids:
+                cd = self.tid_to_codes.get(tid)
+                if cd is not None:
+                    rejected_l0.add(cd[0])
+
+        # Keep only non-blacklisted buckets, up to k.
+        top_l0 = [b for b in top_l0_all if b not in rejected_l0][:k]
 
         result = []
         meta_map: dict[str, tuple[int, float]] = {}
