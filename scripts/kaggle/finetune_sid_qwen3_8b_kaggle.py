@@ -35,7 +35,7 @@ REPO_URL  = "https://github.com/SuryaaSeran/recsys-music-26.git"
 REPO_DIR  = Path("/kaggle/working/repo")
 DATA_DIR  = REPO_DIR / "data/semantic_id_llm"
 OUT_DIR   = Path("/kaggle/working/sid_qwen3_8b")
-MODEL_ID  = "Qwen/Qwen3-8B-Instruct"
+MODEL_ID  = "Qwen/Qwen3-8B"   # Qwen3-8B is the instruct model (no -Instruct suffix)
 
 import shutil
 if REPO_DIR.exists():
@@ -86,13 +86,14 @@ print(f"  Train: {len(train_raw):,}  Valid: {len(valid_raw):,}")
 
 # ── Load model (4-bit QLoRA) ──────────────────────────────────────────────────
 print(f"Loading {MODEL_ID} in 4-bit...")
+hf_token = os.environ.get("HF_TOKEN")
 bnb_cfg = BitsAndBytesConfig(
     load_in_4bit=True,
     bnb_4bit_compute_dtype=torch.bfloat16,
     bnb_4bit_use_double_quant=True,
     bnb_4bit_quant_type="nf4",
 )
-tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, padding_side="right")
+tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, padding_side="right", token=hf_token)
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 
@@ -101,6 +102,7 @@ model = AutoModelForCausalLM.from_pretrained(
     quantization_config=bnb_cfg,
     device_map="auto",
     torch_dtype=torch.bfloat16,
+    token=hf_token,
 )
 model.config.use_cache = False
 
