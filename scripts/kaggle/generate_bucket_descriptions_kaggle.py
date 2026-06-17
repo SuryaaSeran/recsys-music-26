@@ -39,7 +39,11 @@ from transformers import AutoProcessor, AutoModelForMultimodalLM
 
 # ── Config ────────────────────────────────────────────────────────────────────
 MODEL_ID       = "google/gemma-4-12B-it"
-MEMBERS_PATH   = "/kaggle/input/reccysmusic-bucket-members/bucket_members.json"
+# Path relative to cloned repo — works when run via:
+# !python /kaggle/working/repo/scripts/kaggle/generate_bucket_descriptions_kaggle.py
+_SCRIPT_DIR    = Path(__file__).resolve().parent
+_REPO_ROOT     = _SCRIPT_DIR.parent.parent
+MEMBERS_PATH   = str(_REPO_ROOT / "kaggle_datasets/reccysmusic-bucket-members/bucket_members.json")
 OUT_PATH       = Path("/kaggle/working/bucket_descriptions.json")
 GIT_REPO       = "https://github.com/SuryaaSeran/recsys-music-26.git"
 GIT_OUT_PATH   = "cache/semantic_ids/runF_v8e_L2C64/bucket_descriptions.json"
