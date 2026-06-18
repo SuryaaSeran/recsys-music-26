@@ -18,7 +18,26 @@ import json
 import os
 import subprocess
 import sys
+import traceback
 from pathlib import Path
+
+# Force unbuffered, line-flushed stdout/stderr so logs stream live in Kaggle
+# (even when launched via subprocess.run or !python, which otherwise buffer).
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except Exception:
+    pass
+os.environ.setdefault("PYTHONUNBUFFERED", "1")
+
+# Wrap the whole script so any error prints a full traceback to stdout
+# instead of being swallowed by subprocess.
+def _excepthook(exc_type, exc_value, exc_tb):
+    print("\n===== FATAL ERROR =====", flush=True)
+    traceback.print_exception(exc_type, exc_value, exc_tb)
+    sys.stdout.flush()
+    sys.stderr.flush()
+sys.excepthook = _excepthook
 
 # ── Secrets ───────────────────────────────────────────────────────────────────
 try:
@@ -155,9 +174,9 @@ collator = DataCollatorForSeq2Seq(tokenizer, model=model, padding=True, pad_to_m
 training_args = TrainingArguments(
     output_dir=str(OUT_DIR),
     num_train_epochs=2,                  # 2 is plenty for 64-class bucket prediction
-    per_device_train_batch_size=8,       # T4 16GB fits 8 at seq 1024 in 4-bit
-    per_device_eval_batch_size=8,
-    gradient_accumulation_steps=4,       # effective batch = 8*2gpu*4 = 64
+    per_device_train_batch_size=4,       # T4 16GB safe for 8B 4-bit at seq 1024
+    per_device_eval_batch_size=4,
+    gradient_accumulation_steps=8,       # effective batch = 4*2gpu*8 = 64
     learning_rate=2e-4,
     warmup_steps=100,
     lr_scheduler_type="cosine",
