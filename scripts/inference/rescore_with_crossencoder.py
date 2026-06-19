@@ -32,14 +32,16 @@ parser.add_argument("--batch_size", type=int, default=32)
 parser.add_argument("--blend", type=float, default=0.0,
                     help="If >0, final score = blend*ltr_rank_sig + (1-blend)*ce_score. "
                          "Preserves some LTR signal.")
-parser.add_argument("--query_template", default="default", choices=["default", "multi_turn"],
-                    help="default = legacy v2 anchor; multi_turn = [TURN-3]/[TURN-2]/[TURN-1] tagged (matches CE v3 training).")
+parser.add_argument("--query_template", default="default", choices=["default", "multi_turn", "v8d"],
+                    help="default = legacy v2 anchor; multi_turn = [TURN-N] (CE v3); "
+                         "v8d = role-tagged anchor with reactions+listener (CE v4).")
 args = parser.parse_args()
 
 out_path = args.out or args.pred.replace(".json", "_ce.json")
 
-print(f"Loading cross-encoder: {args.model}")
-ce = CrossEncoder(args.model, max_length=256)
+_ce_maxlen = 512 if args.query_template == "v8d" else 256
+print(f"Loading cross-encoder: {args.model} (max_length={_ce_maxlen})")
+ce = CrossEncoder(args.model, max_length=_ce_maxlen)
 
 print("Loading track metadata...")
 meta_ds = load_dataset("talkpl-ai/TalkPlayData-Challenge-Track-Metadata")
@@ -48,14 +50,18 @@ metadata_dict = {row["track_id"]: row for row in all_tracks}
 
 
 def get_candidate_text(tid: str) -> str:
+    # Matches build_crossencoder_v4_data.get_track_text (top-12 tags + year)
     row = metadata_dict.get(tid, {})
     name   = (row.get("track_name")  or ["?"])[0]
     artist = (row.get("artist_name") or ["?"])[0]
     album  = (row.get("album_name")  or [""])[0]
-    tags   = " ".join((row.get("tag_list") or [])[:8])
+    tags   = " ".join((row.get("tag_list") or [])[:12])
+    release = row.get("release_date") or ""
+    year = str(release)[:4] if release else ""
     parts = [name, f"by {artist}"]
     if album: parts.append(f"| Album: {album}")
     if tags:  parts.append(f"| Tags: {tags}")
+    if year:  parts.append(f"| {year}")
     return " ".join(parts)
 
 
@@ -141,7 +147,89 @@ def build_query_multiturn(session: dict, turn_number: int) -> str:
     return " ".join(parts).strip()
 
 
+_V8D_REACTION = {"MOVES_TOWARD_GOAL": "liked", "DOES_NOT_MOVE_TOWARD_GOAL": "rejected"}
+_v8d_tok = None
+
+def build_query_v8d(session: dict, turn_number: int) -> str:
+    """v8d role-tagged anchor matching build_crossencoder_v4_data.py / inference."""
+    global _v8d_tok
+    if _v8d_tok is None:
+        from transformers import AutoTokenizer
+        _v8d_tok = AutoTokenizer.from_pretrained("intfloat/multilingual-e5-base")
+    def ctok(t): return len(_v8d_tok.encode(t, add_special_tokens=False))
+
+    prof = session.get("user_profile") or {}
+    parts = [str(prof.get(k, "") or "") for k in
+             ("age_group", "country_code", "gender",
+              "preferred_musical_culture", "preferred_language")]
+    profile_line = "[PROFILE] " + " · ".join(p for p in parts if p)
+    goal_obj = session.get("conversation_goal") or {}
+    goal = goal_obj.get("listener_goal", "") or ""
+    spec = goal_obj.get("specificity", "") or ""
+    goal_line = f"[GOAL] {goal}".strip() + (f"  ({spec})" if spec else "")
+
+    progress = {a["turn_number"] - 1: a["goal_progress_assessment"]
+                for a in (session.get("goal_progress_assessments") or [])}
+
+    mh, mturns, mlabels, text_hist, thought_hist = [], [], [], [], []
+    latest_user = ""
+    for turn in session.get("conversations") or []:
+        if turn.get("turn_number") == turn_number and turn.get("role") == "music":
+            break
+        role = turn.get("role")
+        if role == "music" and turn.get("content"):
+            mh.append(turn["content"]); mturns.append(turn["turn_number"])
+            mlabels.append(progress.get(turn["turn_number"], ""))
+        elif role in ("user", "assistant"):
+            text_hist.append(turn.get("content") or "")
+            thought_hist.append((turn.get("thought") or "") if role == "user" else "")
+            if role == "user":
+                latest_user = turn.get("content") or ""
+
+    now_line = f"[NOW] USER: {latest_user}".strip()
+    core = profile_line + "\n" + goal_line + "\n" + now_line
+    budget = 510 - ctok("query: " + core)
+    th = thought_hist[:-1]
+
+    blocks = []
+    for i, (tid, tn) in enumerate(zip(mh, mturns)):
+        rec = get_track_name_artist(tid).strip('"')
+        rxn = _V8D_REACTION.get(mlabels[i] if i < len(mlabels) else "", "unknown")
+        umsg = text_hist[2*i]   if 2*i   < len(text_hist) - 1 else ""
+        amsg = text_hist[2*i+1] if 2*i+1 < len(text_hist) - 1 else ""
+        lt = (th[2*i] if 2*i < len(th) else "") or ""
+        if lt:
+            end = lt.find(". "); lt = lt[:end+1] if 0 < end < 200 else lt[:200]
+        blocks.append({"turn": tn, "user": umsg, "rec": rec, "asst": amsg, "reaction": rxn, "lt": lt})
+
+    def cands(hb):
+        ls = f" | LISTENER: {hb['lt']}" if hb["lt"] else ""
+        return (f"[T{hb['turn']}] USER: {hb['user']} | REC: {hb['rec']} | ASST: {hb['asst']} | REACTION: {hb['reaction']}{ls}",
+                f"[T{hb['turn']}] USER: {hb['user']} | REC: {hb['rec']} | REACTION: {hb['reaction']}{ls}",
+                f"[T{hb['turn']}] USER: {hb['user']} | REC: {hb['rec']} | REACTION: {hb['reaction']}")
+    def insert(hb, bud):
+        for c in cands(hb):
+            cost = ctok("\n" + c)
+            if bud >= cost: return c, bud - cost
+        return None, bud
+
+    added_rest = []
+    if blocks:
+        first, rest = blocks[0], blocks[1:]
+        for hb in reversed(rest):
+            txt, budget = insert(hb, budget)
+            if txt: added_rest.append(txt)
+        added_rest.reverse()
+        ftxt, budget = insert(first, budget)
+        added = ([ftxt] if ftxt else []) + added_rest
+    else:
+        added = []
+    return "query: " + "\n".join([profile_line, goal_line] + added + [now_line])
+
+
 def make_query(session, turn_number):
+    if args.query_template == "v8d":
+        return build_query_v8d(session, turn_number)
     if args.query_template == "multi_turn":
         return build_query_multiturn(session, turn_number)
     return build_query(session, turn_number)
