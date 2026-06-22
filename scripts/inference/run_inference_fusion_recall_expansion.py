@@ -182,6 +182,16 @@ parser.add_argument("--sasrec_top_k_l0", type=int, default=3,
 parser.add_argument("--sasrec_max_cands", type=int, default=0,
                     help="Cap on Stage 3 SASRec candidates added per turn (0 = no cap). "
                          "Use ~500 for feature dump to keep LTR array within 16GB RAM.")
+parser.add_argument("--centroid_top_k_l0", type=int, default=0,
+                    help="Stage 3E: match TT query embedding to L0 bucket centroids and expand "
+                         "top-k matching buckets. Requires centroids_l0_768d.npy in --centroid_dir. "
+                         "0 = disabled. Good value: 2-3.")
+parser.add_argument("--centroid_max_cands", type=int, default=300,
+                    help="Cap on Stage 3E centroid-based candidates per turn (0 = no cap).")
+parser.add_argument("--centroid_dir", default="",
+                    help="Directory for Stage 3E centroids (centroids_l0_768d.npy + semantic_ids.npy). "
+                         "Defaults to --semantic_ids_dir if not set. Use to point at runF when "
+                         "--semantic_ids_dir points at runC2.")
 parser.add_argument("--use_goal_progress", action="store_true",
                     help="H1+H3: use goal_progress_assessments at inference to filter "
                          "rejected tracks from retrieval seeds (H1) and optionally modulate "
@@ -619,6 +629,29 @@ if _sem_codes_path.exists() and _sem_ids_path.exists():
     print(f"Loaded semantic IDs: {len(tid_to_sem):,} tracks × {_sem_codes.shape[1]} levels from {_sem_dir}")
 else:
     print(f"Semantic IDs not found at {_sem_dir} (features will default to 0)")
+
+# Stage 3E: centroid-based query→bucket expansion
+# Reverse map l0_code → list[track_id] for fast bucket→candidates lookup.
+# Centroids are mean-pooled + normalized TT passage embeddings per L0 bucket.
+_centroid_top_k_l0 = getattr(args, "centroid_top_k_l0", 0)
+_l0_to_tids: dict[int, list] = {}
+_l0_centroids: "np.ndarray | None" = None
+if _centroid_top_k_l0 > 0:
+    _ce_dir = Path(getattr(args, "centroid_dir", "") or _sem_dir)
+    _centroids_path = _ce_dir / "centroids_l0_768d.npy"
+    _ce_sids_path   = _ce_dir / "semantic_ids.npy"
+    _ce_tids_path   = _ce_dir / "track_ids.npy"
+    if _centroids_path.exists() and _ce_sids_path.exists():
+        _l0_centroids = np.load(str(_centroids_path))  # (n_buckets, 768)
+        _ce_sids = np.load(str(_ce_sids_path))
+        _ce_tids = np.load(str(_ce_tids_path), allow_pickle=True).tolist()
+        for _ct, _cv in zip(_ce_tids, _ce_sids):
+            _l0_to_tids.setdefault(int(_cv[0]), []).append(str(_ct))
+        print(f"Stage 3E centroids loaded: {_l0_centroids.shape}, "
+              f"{len(_l0_to_tids)} L0 buckets, top_k={_centroid_top_k_l0} from {_ce_dir}")
+    else:
+        print(f"Stage 3E: centroids_l0_768d.npy not found in {_ce_dir} — disabled")
+        _centroid_top_k_l0 = 0
 
 # Stage 3: SASRec semantic-bucket recall expansion
 _sasrec_retriever = None
@@ -1354,6 +1387,32 @@ for item in tqdm(sessions, desc="Sessions"):
                     sources[tid] = {"sem_bucket"}
                     _s3_added += 1
             sem_bucket_meta.update({t: v for t, v in _s3_meta.items() if t in cands_set})
+
+        # Stage 3E: centroid-based query→bucket expansion (Plan 12 E).
+        # Cosine-match TT query embedding to L0 centroids (item-side mean embeddings).
+        # Expands goal-aware, conversation-aware candidates without a sequence model.
+        if _centroid_top_k_l0 > 0 and _l0_centroids is not None and tt_emb is not None:
+            _ce_scores = _l0_centroids @ tt_emb          # (64,) cosine similarities
+            _ce_top_l0 = np.argsort(_ce_scores)[::-1][:_centroid_top_k_l0]
+            _ce_cands: list[str] = []
+            for _l0_code in _ce_top_l0:
+                _ce_cands.extend(_l0_to_tids.get(int(_l0_code), []))
+            # Rank by TT query similarity before cap
+            _ce_ranked = sorted(
+                ((float(tt_embs[tt_id2idx[t]] @ tt_emb) if tt_id2idx.get(t) is not None else -1.0, t)
+                 for t in _ce_cands),
+                reverse=True,
+            )
+            _ce_cap = args.centroid_max_cands if args.centroid_max_cands > 0 else len(_ce_ranked)
+            _ce_added = 0
+            for _, tid in _ce_ranked:
+                if _ce_added >= _ce_cap:
+                    break
+                if tid not in cands_set:
+                    cands.append(tid)
+                    cands_set.add(tid)
+                    sources[tid] = {"sem_centroid"}
+                    _ce_added += 1
 
         # Pool recall tracking
         gold_track = turn["content"]
