@@ -848,6 +848,10 @@ FEATURE_COLS = [
     "from_sem_bucket",              # binary, candidate entered pool via SASRec L0 bucket expansion
     "sem_bucket_l0_rank",           # rank of predicted L0 bucket (0=top, normalised /top_k)
     "sem_bucket_l0_score",          # softmax probability of predicted L0 bucket
+    # Stage 3E source-calibration features (non-zero only when --centroid_top_k_l0 > 0)
+    "from_sem_centroid",            # binary, candidate entered pool via centroid query→bucket match
+    "sem_centroid_l0_rank",         # rank of centroid-matched L0 bucket (0=top, normalised /top_k)
+    "sem_centroid_l0_score",        # cosine similarity of matched centroid to TT query
 ]
 
 ltr_booster = None
@@ -1353,6 +1357,7 @@ for item in tqdm(sessions, desc="Sessions"):
         # Stage 3: SASRec semantic-bucket expansion
         # sem_bucket_meta[tid] = (l0_rank, l0_prob) for source-calibration features
         sem_bucket_meta: dict[str, tuple[int, float]] = {}
+        sem_centroid_meta: dict[str, tuple[int, float]] = {}
         if _sasrec_retriever is not None and music_history:
             # Build rejected set: tracks with DOES_NOT labels in this session.
             _s3_rejected = {
@@ -1391,12 +1396,20 @@ for item in tqdm(sessions, desc="Sessions"):
         # Stage 3E: centroid-based query→bucket expansion (Plan 12 E).
         # Cosine-match TT query embedding to L0 centroids (item-side mean embeddings).
         # Expands goal-aware, conversation-aware candidates without a sequence model.
+        # sem_centroid_meta[tid] = (l0_rank, l0_cosine) for source-calibration features.
         if _centroid_top_k_l0 > 0 and _l0_centroids is not None and tt_emb is not None:
             _ce_scores = _l0_centroids @ tt_emb          # (64,) cosine similarities
             _ce_top_l0 = np.argsort(_ce_scores)[::-1][:_centroid_top_k_l0]
+            # Map each track in a matched bucket to (rank_of_bucket, bucket_cosine)
+            _ce_tid_bucket: dict[str, tuple[int, float]] = {}
             _ce_cands: list[str] = []
-            for _l0_code in _ce_top_l0:
-                _ce_cands.extend(_l0_to_tids.get(int(_l0_code), []))
+            for _ce_rank, _l0_code in enumerate(_ce_top_l0):
+                _l0c = int(_l0_code)
+                _l0_cos = float(_ce_scores[_l0c])
+                for _t in _l0_to_tids.get(_l0c, []):
+                    _ce_cands.append(_t)
+                    if _t not in _ce_tid_bucket:
+                        _ce_tid_bucket[_t] = (_ce_rank, _l0_cos)
             # Rank by TT query similarity before cap
             _ce_ranked = sorted(
                 ((float(tt_embs[tt_id2idx[t]] @ tt_emb) if tt_id2idx.get(t) is not None else -1.0, t)
@@ -1412,6 +1425,7 @@ for item in tqdm(sessions, desc="Sessions"):
                     cands.append(tid)
                     cands_set.add(tid)
                     sources[tid] = {"sem_centroid"}
+                    sem_centroid_meta[tid] = _ce_tid_bucket.get(tid, (0, 0.0))
                     _ce_added += 1
 
         # Pool recall tracking
@@ -1823,6 +1837,10 @@ for item in tqdm(sessions, desc="Sessions"):
                     1.0 if tid in sem_bucket_meta else 0.0,
                     float(sem_bucket_meta[tid][0]) / max(args.sasrec_top_k_l0, 1) if tid in sem_bucket_meta else 0.0,
                     float(sem_bucket_meta[tid][1]) if tid in sem_bucket_meta else 0.0,
+                    # Stage 3E centroid source-calibration features
+                    1.0 if tid in sem_centroid_meta else 0.0,
+                    float(sem_centroid_meta[tid][0]) / max(_centroid_top_k_l0, 1) if tid in sem_centroid_meta else 0.0,
+                    float(sem_centroid_meta[tid][1]) if tid in sem_centroid_meta else 0.0,
                 )
                 if tid == gold_tid:
                     if args.weak_does_not and _is_rejected_gold:
