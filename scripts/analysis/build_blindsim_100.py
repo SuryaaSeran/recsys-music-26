@@ -32,12 +32,15 @@ random.seed(args.seed)
 ds = load_dataset("talkpl-ai/TalkPlayData-Challenge-Dataset")["test"]
 pool = [ds[i] for i in range(min(args.pool, len(ds)))]
 
-# Per-session MOVES_TOWARD_GOAL turn set. Turn 1 is always null (session start),
-# so it is treated as the cold-start single-turn case and is always eligible.
-# Turns 2-8 are only eligible as eval targets if MOVES_TOWARD_GOAL (clean positive).
+# Per-session MOVES_TOWARD_GOAL turn set.
+# A turn T is eligible only when its recommendation was confirmed MOVES_TOWARD_GOAL.
+# Turn 1 has null gpa (no prior rec to assess) but CAN be eligible if gpa_2 = MOVES
+# (i.e., the first recommendation was accepted). Turn 8 is never eligible (no gpa_9).
 moves_turns = {}
 for s in pool:
-    mt = {a["turn_number"] for a in (s.get("goal_progress_assessments") or [])
+    # Re-key by T-1: gpa at turn T judges the rec made at T-1, so collect
+    # turn numbers for which the recommendation moved toward the goal.
+    mt = {a["turn_number"] - 1 for a in (s.get("goal_progress_assessments") or [])
           if a.get("goal_progress_assessment") == "MOVES_TOWARD_GOAL"}
     moves_turns[s["session_id"]] = mt
 
@@ -53,7 +56,7 @@ for turn, count in TURN_COUNTS.items():
             break
         if sid in used:
             continue
-        eligible = (turn == 1) or (turn in moves_turns.get(sid, set()))
+        eligible = (turn in moves_turns.get(sid, set()))
         if not eligible:
             continue
         spec.append({"session_id": sid, "turn_number": turn})

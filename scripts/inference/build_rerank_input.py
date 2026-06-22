@@ -63,7 +63,8 @@ session_map = {it["session_id"]: it for it in ds}
 def build_query(item, turn_number):
     goal = (item.get("conversation_goal") or {}).get("listener_goal", "") or ""
     culture = (item.get("user_profile") or {}).get("preferred_musical_culture", "") or ""
-    progress = {a["turn_number"]: (a.get("goal_progress_assessment") or "")
+    # Re-key by T-1: gpa at turn T judges the rec made at T-1.
+    progress = {a["turn_number"] - 1: (a.get("goal_progress_assessment") or "")
                 for a in (item.get("goal_progress_assessments") or [])}
     have_progress = any(v for v in progress.values())
     latest_user, played = "", []

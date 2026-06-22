@@ -18,14 +18,18 @@ Quick path for a new session:
 
 ## Active phases
 
-Phase 11: nDCG improvement — Stage 3 recall expansion + v8e TT retrain (listener thought).
-See `plan/11_response_and_recall.md` (to be written).
+Phase 11: Response quality + CE v4 reranker.
+Plans: `plan/12_semantic_ids_v2.md`, `plan/13_semantic_id_llm.md`.
 
-Current state:
-- Dev gate: **0.1684** (Phase D v6, 39-feat LTR) — held since 2026-05-29.
-- Blind A nDCG@20: **0.3997** (v19, v8d + Stage 3 SASRec cap=300, submitted 2026-06-15).
-- Blind A composite: **0.4837** (v07, judge 4.4/5).
-- v8e TT retrain in progress (adds listener thought T_t^l to anchor history blocks).
+Current state (2026-06-21):
+- Dev nDCG@20: **0.1867** (v8e runF full, `v8e_runF_full_dev1000.json`).
+- Dev nDCG@20: 0.1864 (v8d Tier1) | 0.1851 (v8e Stage3cap).
+- Blind A nDCG@20: **0.3997** (v19, v8d + Stage3cap300, submitted 2026-06-15). Both v19 and v20 have fallback responses.
+- Blind A composite: **0.4837** (v07, judge 4.4/5) — responses drove this.
+- v21 in progress: v19 retrieval + gemma-3-12b native API responses (currently generating).
+- CE v4 reranker: data ready (`data/crossencoder_v4/`, 15.8K train), model not yet trained (needs RAM).
+- Bucket recall ceiling (2026-06-18): SASRec@3 = 42.1%, centroid@3 = 47.3% — Stage 3 bucket expansion is capped.
+- gpa off-by-one bug fixed (2026-06-21): all data builders now use `turn_number - 1` as the correct gpa index.
 
 ## Data correction: goal_progress_assessment is off by one turn (2026-06-05)
 
@@ -61,6 +65,7 @@ happens at turn t; the feedback is recorded at turn t+1. So:
 0.3997  v19 v8d+Stage3cap300 (submitted 2026-06-15) ← BEST BLIND A — composite 0.3370, judge 2.0, LexDiv 0.5909
 0.3990  v18 Tier1 (submitted 2026-06-14) — composite 0.3291, judge 1.9, LexDiv 0.5909
 0.3310  v18 + Qwen3-8B rerank (submitted 2026-06-15) — WORSE: reranker collapses LexDiv (0.0125), judge 1.15
+[v21 pending] v19 retrieval + gemma-3-12b native API responses — expect composite 0.50+
 ```
 
 ## Why Qwen3-8B reranker hurts on blind A

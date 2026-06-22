@@ -77,6 +77,14 @@ Each turn's gold track has a `goal_progress_assessment` label:
 
 MNRL does not support per-sample weights, so we approximate by probabilistic dropping.
 
+> **CORRECTION (2026-06-05): this weighting is off by one turn.** `goal_progress_assessment`
+> at turn T is the listener's verdict on the recommendation made at turn **T-1**, not turn T
+> (action at t, feedback recorded at t+1). So the weight for the turn-T gold should come from
+> `gpa_{T+1}`, not `gpa_T`. As written above we weighted each gold by the label that judges
+> the *previous* turn's track. gpa resolves only for R_1..R_7 (R_8 has no gpa_9); turn 1's
+> gpa is `None` = no prior rec. gpa is also goal-relative (progress toward the session goal),
+> not turn-level satisfaction. See `plan/PLAN.md` "Data correction" for the full note.
+
 ### Train/valid split
 
 95% of sessions -> train, 5% -> validation. Split is at session level so no turn

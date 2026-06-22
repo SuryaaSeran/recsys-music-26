@@ -191,8 +191,10 @@ def build_examples(sessions: list) -> list[dict]:
         age_group = profile.get("age_group", "") or ""
         country = profile.get("country_name", "") or ""
 
+        # Re-key by T-1: gpa at turn T judges the rec made at T-1, so
+        # progress_by_turn[turn_num] = assessment for the rec at turn_num.
         progress_by_turn = {
-            a["turn_number"]: a["goal_progress_assessment"]
+            a["turn_number"] - 1: a["goal_progress_assessment"]
             for a in (item.get("goal_progress_assessments") or [])
         }
 
