@@ -1333,6 +1333,16 @@ for item in tqdm(sessions, desc="Sessions"):
                 history_labels=music_history_labels if music_history_labels else None,
                 rejected_tids=_s3_rejected,
             )
+            # Plan-12 G: rank Stage-3 candidates by TT query similarity before cap.
+            # Without this, the cap cuts an arbitrary slice of each bucket.
+            # With query-similarity ranking, the most query-relevant tracks survive.
+            if _s3_cands and tt_emb is not None:
+                _s3_sims = []
+                for _s3_tid in _s3_cands:
+                    _s3_idx = tt_id2idx.get(_s3_tid)
+                    _s3_sim = float(tt_embs[_s3_idx] @ tt_emb) if _s3_idx is not None else -1.0
+                    _s3_sims.append((_s3_sim, _s3_tid))
+                _s3_cands = [_t for _, _t in sorted(_s3_sims, reverse=True)]
             _s3_cap = args.sasrec_max_cands if args.sasrec_max_cands > 0 else len(_s3_cands)
             _s3_added = 0
             for tid in _s3_cands:
