@@ -127,10 +127,35 @@ Then merge Claude responses -> `prediction.json`, `zip submission.zip prediction
 
 | Ver | Retrieval | Post-proc | Responses | sim nDCG@20 | Status |
 |---|---|---|---|---|---|
-| **v1** | v8d + Stage3 + infer_labels + goal_sub | none | Claude rich | 0.1864 | packaged, ship first |
+| **v1** | v8d + Stage3 + infer_labels + goal_sub | none | Claude rich | 0.1864 | packaged |
+| **v2** | same top-20 as v1 | none | Opus pivot-aware | 0.1864 (tracks==v1) | RECOMMENDED — strict improvement over v1 |
+| **v3** | same as v1, emit 25 | Opus prune 5 sessions (15 explicit by-name drops), backfill 21-25 | Opus pivot-aware | unmeasured (nDCG-only risk) | optional gamble |
 
-(Blind B has 3 total submissions. Update this row-by-row after each upload with
-the real score.)
+(Blind B has 3 total submissions. Update with real scores after upload.)
+
+### v2 (pivot-aware responses) — the safe judge lever
+Idea: the judge scores response TEXT only (independent of tracks). On the 14
+turns where the user signals a pivot ("break away from X", "something different",
+"too serious"), the v1 response risked sounding like "here's more of the same".
+v2 keeps the v1 top-20 tracks UNCHANGED (so nDCG is identical) but regenerates
+responses with Opus so pivot turns explicitly acknowledge the shift and honestly
+frame the pick (a genuinely-different artist -> name the contrast; a still-rejected
+artist forced by the fixed list -> admit it and frame as the closest bridge).
+Zero nDCG risk, pure judge/personalisation upside. LexDiv 0.745, 80 distinct
+openers, hand-written (NOT templated — a templated first attempt scored LexDiv
+0.26 and was discarded). Pivot detector: `_detect_pivot` regex on latest message.
+
+### v3 (LLM track pruning) — nDCG-only gamble, optional
+Over-generate 25 (`--emit_topk 25`), Opus dry-run audits each 25-list, drops ONLY
+tracks whose artist/category the user explicitly rejected BY NAME, backfills from
+ranks 21-25. 5 sessions touched: 04135d8a (Deltron ban), 60f60edd (rain-sound
+recordings vs electronic ambient), 6c90a029 (Morcheeba trip-hop vs classic rock),
+6e2eb7e6 (proto-punk ban), 5870e73f (Deltron, low-confidence). NOTE: the judge is
+text-only so pruning has NO judge benefit; it only moves nDCG (+ a little catdiv).
+Helps iff a dropped track was a non-gold ranked above the gold; hurts iff a drop
+removes the gold. For EXPLICIT by-name bans the gold-is-rejected rate is well below
+the 40% soft-pivot aggregate, so these specific drops are probably safe — but it is
+UNMEASURABLE on the blind set. Decisions: `/tmp/blindb_prune_decisions.json`.
 
 ## Tried and REJECTED (do not repeat)
 
