@@ -84,6 +84,12 @@ parser.add_argument("--boost_named_track", action="store_true",
                     help="Float exact track to rank 1 when the user names both the track title "
                          "(>=4 chars) and its artist in their own messages. High-precision boost "
                          "for quiz-style turns. Applied before --max_per_artist.")
+parser.add_argument("--pivot_suppress", action="store_true",
+                    help="When the latest user message shows explicit pivot/rejection intent "
+                         "(\"break away\", \"something different\", \"stop giving me X\", \"new artist\"), "
+                         "demote all tracks by artists already in the session history to the bottom "
+                         "of the ranking, so diverse non-history candidates fill the top-20. "
+                         "Conditional: no effect on sessions without pivot language.")
 parser.add_argument("--emit_topk",   type=int,   default=0,
                     help="If >0, write this many candidate IDs per turn into "
                          "predicted_track_ids (for downstream reranking). Default 0 "
@@ -1043,6 +1049,31 @@ def _normalize_match_text(_t: str) -> str:
     _t = (_t or "").lower()
     _t = _MATCH_PUNCT.sub(" ", _t)
     return _MATCH_WS.sub(" ", _t).strip()
+
+
+# High-precision pivot/rejection-intent detector for --pivot_suppress.
+# Fires only on explicit "move on / something different / stop this" phrasing so it
+# does NOT touch legitimate single-artist deep-dive sessions (where the gold is
+# often another track by the same artist). Matched against the latest user message.
+_PIVOT_PATTERNS = _re_match.compile(
+    r"\b("
+    r"break away|branch out|move on|move away|get away from|move past|"
+    r"switch (it|things) up|change (it|things) up|mix (it|things) up|"
+    r"something (different|else|new)|different (artist|band|sound|style|direction|vibe|genre|phase)|"
+    r"new (\w+ ){0,3}(artist|band|artists|bands)|other (artist|artists|bands)|"
+    r"(discover|find|explore|hoping for|looking for)( a| an| some)? new\b|"
+    r"tired of|sick of|bored of|enough of|done with|move beyond|"
+    r"stop (giving|playing|recommending|with)|no more|"
+    r"not (this|that|what|really what|looking for more|interested)|"
+    r"(this|that)('| i)?s? (is)?\s?n[o']t (what|it|right|working)|"
+    r"isn'?t what i|don'?t want (more|another|any more)|"
+    r"away from|instead of|rather than|other than|besides|"
+    r"discover (new|other|different)|explore (new|other|different)"
+    r")\b",
+    _re_match.IGNORECASE,
+)
+def _detect_pivot_intent(_latest_user: str) -> bool:
+    return bool(_latest_user) and bool(_PIVOT_PATTERNS.search(_latest_user))
 
 
 for item in tqdm(sessions, desc="Sessions"):
@@ -2012,6 +2043,29 @@ for item in tqdm(sessions, desc="Sessions"):
                     _boost_order + [int(j) for j in _ranked_idx if int(j) not in _bset],
                     dtype=int,
                 )
+
+        # --pivot_suppress: on explicit pivot/rejection intent, demote every track
+        # whose artist already appears in the session history to the bottom of the
+        # ranking. Targets the dominant Blind-B failure (user says "break away from
+        # X" / "something different" and gets flooded with the same artist). Strictly
+        # conditional on pivot language, so deep-dive sessions are untouched.
+        if args.pivot_suppress and music_history and _detect_pivot_intent(latest_user):
+            _hist_artists = set()
+            for _htid in music_history:
+                _hrow = metadata_dict.get(_htid, {})
+                _hart = _normalize_match_text((_hrow.get("artist_name") or [""])[0])
+                if _hart:
+                    _hist_artists.add(_hart)
+            if _hist_artists:
+                _keep_idx, _demote_idx = [], []
+                for _i in _ranked_idx:
+                    _row = metadata_dict.get(cands[_i], {})
+                    _an = _normalize_match_text((_row.get("artist_name") or [""])[0])
+                    (_demote_idx if _an in _hist_artists else _keep_idx).append(int(_i))
+                # Only apply if enough non-history candidates exist to fill the list;
+                # otherwise the pool is too thin and we keep the original order.
+                if len(_keep_idx) >= _emit_k:
+                    _ranked_idx = np.array(_keep_idx + _demote_idx, dtype=int)
 
         if args.max_per_artist > 0:
             # Artist-diversity cap: greedily fill the emit list in score order but

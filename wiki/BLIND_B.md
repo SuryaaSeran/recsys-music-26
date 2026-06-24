@@ -144,8 +144,38 @@ the real score.)
   (past plays they react to), not the next track. Would need imperative-request
   detection ("play X" vs "I liked X") to be safe. Code retained (default off).
   DO NOT enable without a restricted, re-validated matcher.
+- `--pivot_suppress` (demote history artists when user shows pivot/rejection
+  intent): sim 0.1864 -> 0.1656. Conditional and clean (fires on 16% of turns,
+  ZERO effect on non-fired turns), but on FIRED turns nDCG collapses 0.1766 ->
+  0.0444 (-0.13). ROOT CAUSE, measured: on pivot-fired turns the ground-truth
+  next track is STILL by a history artist 40% of the time. TalkPlay's logged
+  "next track" stays in the same artist neighborhood even when the user verbally
+  asks to move on, so suppressing history artists evicts the gold. Code retained
+  (default off). DO NOT enable.
 - Stage 3E centroid bucket expansion + LTR retrain: golden-200 0.1841 -> 0.1809.
   Bucket-precision ceiling; see memory feedback. DO NOT enable (`--centroid_top_k_l0` default 0).
+
+## The core lesson (why the external audit fixes do not raise the score)
+
+The external audit (`wiki/BLIND_B_v1_audit_external.md`) and fix proposal
+(`wiki/BLIND_B_v1_fix_proposal.md`) optimise HUMAN-PERCEIVED relevance: "the user
+said stop, don't give more of that artist." Every artist-suppression variant we
+implemented and validated (cap, named-track boost, pivot-conditional suppress)
+REGRESSES nDCG@20 — the metric weighted 0.50 — because:
+
+1. nDCG rewards hitting the single LOGGED next track. In TalkPlay that track sits
+   in the same artist/cluster as the history ~40-75% of the time, EVEN on turns
+   where the user verbally pivots. The LTR already learned this; hard post-hoc
+   rules override it and lose.
+2. The LLM judge (weight 0.30) scores the RESPONSE TEXT ONLY, independent of the
+   track list. So the place to honour the user's pivot is the WRITTEN RESPONSE
+   ("I hear you want to move away from X — here's something with a different
+   feel..."), NOT the track ranking. This raises judge/personalisation without
+   costing nDCG.
+
+Conclusion for Blind B: keep the LTR track ranking untouched (v1). Put
+pivot/rejection awareness into the response text (judge lever), never the ids.
+This is now validated 3 independent ways (cap, boost, pivot_suppress all regress).
 
 ## Known limitations (audit `/tmp/blindb_audit_report.md`, future work)
 
