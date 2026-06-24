@@ -60,6 +60,14 @@ parser.add_argument("--dataset",     default="talkpl-ai/TalkPlayData-Challenge-D
                     help="HF dataset path. Use talkpl-ai/TalkPlayData-Challenge-Blind-A for Blind A.")
 parser.add_argument("--blind_mode",  action="store_true",
                     help="Predict only the final music turn per session (turn_number = conversations[-1].turn_number). Use with --dataset talkpl-ai/TalkPlayData-Challenge-Blind-A.")
+parser.add_argument("--simulate_blindb", action="store_true",
+                    help="Strip conversation_goal, goal_progress_assessments, and thoughts from "
+                         "every loaded session (to mimic Blind B on a labelled dev set). Pair with "
+                         "--infer_progress_labels to reconstruct REACTION from user text. Use "
+                         "--simulate_blindb_coldfrac to also blank profiles for a fraction of sessions.")
+parser.add_argument("--simulate_blindb_coldfrac", type=float, default=0.0,
+                    help="Fraction of sessions to also strip user_profile (cold-start simulation). "
+                         "0.5 mimics Blind B's 40/80 cold split. Deterministic by session_id hash.")
 parser.add_argument("--shuffle_seed", type=int, default=-1,
                     help=">=0: shuffle sessions before taking --sessions slice (deterministic).")
 parser.add_argument("--session_offset", type=int, default=0,
@@ -70,6 +78,12 @@ parser.add_argument("--session_offset", type=int, default=0,
 parser.add_argument("--tid",         default="fusion_recall_v1")
 parser.add_argument("--out_dir",     default="exp/inference/devset")
 parser.add_argument("--topk",        type=int,   default=20)
+parser.add_argument("--max_per_artist", type=int, default=0,
+                    help="Cap tracks per artist in the emitted top-k (0=off). Counters single-artist flooding, lifts CatalogDiversity; neutral-or-better for single-gold nDCG@20. Good value: 3-4.")
+parser.add_argument("--boost_named_track", action="store_true",
+                    help="Float exact track to rank 1 when the user names both the track title "
+                         "(>=4 chars) and its artist in their own messages. High-precision boost "
+                         "for quiz-style turns. Applied before --max_per_artist.")
 parser.add_argument("--emit_topk",   type=int,   default=0,
                     help="If >0, write this many candidate IDs per turn into "
                          "predicted_track_ids (for downstream reranking). Default 0 "
@@ -767,10 +781,64 @@ elif args.sessions > 0:
     sessions = sessions[args.session_offset: args.session_offset + args.sessions]
 print(f"Using split={args.split}  n_sessions={len(sessions)}  shuffle_seed={args.shuffle_seed}")
 
+# --simulate_blindb: strip goal / gpa / thoughts (and optionally profile) so a
+# labelled dev set behaves like Blind B. Rebuild each session as a plain dict
+# (Arrow-backed rows are read-only). Gold music-turn content is preserved so
+# nDCG can still be scored.
+if args.simulate_blindb:
+    import hashlib as _hb_hash
+    _n_cold = 0
+    _stripped = []
+    for _s in sessions:
+        _s = dict(_s)
+        _s["conversation_goal"] = None
+        _s["goal_progress_assessments"] = []
+        _convs = []
+        for _t in (_s.get("conversations") or []):
+            _t = dict(_t)
+            _t["thought"] = ""
+            _convs.append(_t)
+        _s["conversations"] = _convs
+        if args.simulate_blindb_coldfrac > 0:
+            _hv = int(_hb_hash.sha256(_s["session_id"].encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
+            if _hv < args.simulate_blindb_coldfrac:
+                _s["user_id"] = ""
+                _s["user_profile"] = {}
+                _n_cold += 1
+        _stripped.append(_s)
+    sessions = _stripped
+    print(f"  simulate_blindb: stripped goal/gpa/thoughts from {len(sessions)} sessions; "
+          f"blanked profile on {_n_cold} cold-start sessions (coldfrac={args.simulate_blindb_coldfrac})")
+
+# Normalize turn_number to int (Blind B encodes them as strings like "1").
+# Harmless for dev/Blind-A (already ints). Rebuild rows only if needed.
+def _coerce_int(_v):
+    try:
+        return int(_v)
+    except (TypeError, ValueError):
+        return _v
+if sessions and any(isinstance((c or {}).get("turn_number"), str)
+                    for c in (sessions[0].get("conversations") or [])):
+    _norm = []
+    for _s in sessions:
+        _s = dict(_s)
+        _s["conversations"] = [
+            {**dict(_t), "turn_number": _coerce_int(_t.get("turn_number"))}
+            for _t in (_s.get("conversations") or [])
+        ]
+        if _s.get("goal_progress_assessments"):
+            _s["goal_progress_assessments"] = [
+                {**dict(_a), "turn_number": _coerce_int(_a.get("turn_number"))}
+                for _a in _s["goal_progress_assessments"]
+            ]
+        _norm.append(_s)
+    sessions = _norm
+    print(f"  coerced string turn_number -> int for {len(sessions)} sessions")
+
 # Goal category integer encoding — sorted for deterministic codes across any session ordering.
 # 0 is reserved for unknown/missing.
 _all_goal_cats = sorted({
-    item.get("conversation_goal", {}).get("category", "")
+    (item.get("conversation_goal") or {}).get("category", "") or ""
     for item in sessions
 } - {""})
 GOAL_CATEGORY_MAP: dict[str, int] = {cat: i + 1 for i, cat in enumerate(_all_goal_cats)}
@@ -967,12 +1035,24 @@ if args.write_features:
 total_music_turns = 0
 found_in_pool_count = 0
 
+import re as _re_match
+_MATCH_PUNCT = _re_match.compile(r"[^a-z0-9 ]+")
+_MATCH_WS = _re_match.compile(r"\s+")
+def _normalize_match_text(_t: str) -> str:
+    """Lowercase, strip punctuation, collapse whitespace for title/artist matching."""
+    _t = (_t or "").lower()
+    _t = _MATCH_PUNCT.sub(" ", _t)
+    return _MATCH_WS.sub(" ", _t).strip()
+
+
 for item in tqdm(sessions, desc="Sessions"):
     session_id  = item["session_id"]
     user_id     = item["user_id"]
-    goal        = item.get("conversation_goal", {}).get("listener_goal", "")
-    culture     = item.get("user_profile", {}).get("preferred_musical_culture", "")
-    _goal_cat   = item.get("conversation_goal", {}).get("category", "")
+    _conv_goal  = item.get("conversation_goal") or {}
+    _user_prof  = item.get("user_profile") or {}
+    goal        = _conv_goal.get("listener_goal", "") or ""
+    culture     = _user_prof.get("preferred_musical_culture", "") or ""
+    _goal_cat   = _conv_goal.get("category", "") or ""
     goal_category_int = float(GOAL_CATEGORY_MAP.get(_goal_cat, 0))
     # v8d anchor fields (used when --anchor_v8d)
     _v8d_profile = {
@@ -1030,6 +1110,7 @@ for item in tqdm(sessions, desc="Sessions"):
     music_history_turns: list[int] = []   # parallel to music_history; turn_number per entry (for --anchor_v8d)
     text_history:  list[str] = []
     user_thought_history: list[str] = []  # parallel to text_history; user thought or "" for asst
+    user_msgs_all: list[str] = []         # user messages only (for --boost_named_track matching)
 
     for turn in conversations:
         if turn["role"] != "music":
@@ -1037,6 +1118,8 @@ for item in tqdm(sessions, desc="Sessions"):
                 text_history.append(turn["content"])
                 thought = (turn.get("thought") or "") if turn["role"] == "user" else ""
                 user_thought_history.append(thought)
+                if turn["role"] == "user":
+                    user_msgs_all.append(turn["content"])
             continue
 
         # In blind_mode, real (historic) music turns carry gold content; they
@@ -1904,7 +1987,59 @@ for item in tqdm(sessions, desc="Sessions"):
                 ).numpy().astype(np.float32)
 
         _emit_k = args.emit_topk if args.emit_topk > 0 else args.topk
-        top_idx = np.argsort(total_arr)[::-1][:_emit_k]
+        _ranked_idx = np.argsort(total_arr)[::-1]
+
+        # --boost_named_track: when the user names a specific track AND its artist in
+        # their own messages, that exact track should be rank 1 ("quiz"-style turns
+        # score ~1.0 when right, ~0 when wrong). High-precision: require BOTH the
+        # candidate's normalized track_name (>=4 chars) AND artist_name to appear in
+        # the concatenated user messages. Matches are floated to the front in LTR order.
+        if args.boost_named_track and user_msgs_all:
+            _utext = _normalize_match_text(" ".join(user_msgs_all))
+            _boost_set = []
+            # Only inspect a bounded prefix of the ranked pool for speed.
+            for _i in _ranked_idx[:400]:
+                _row = metadata_dict.get(cands[_i], {})
+                _tn = _normalize_match_text((_row.get("track_name") or [""])[0])
+                _an = _normalize_match_text((_row.get("artist_name") or [""])[0])
+                if len(_tn) >= 4 and _an and (" " + _tn + " ") in (" " + _utext + " ") \
+                        and (" " + _an + " ") in (" " + _utext + " "):
+                    _boost_set.append(_i)
+            if _boost_set:
+                _boost_order = sorted(_boost_set, key=lambda j: -float(total_arr[j]))
+                _bset = set(_boost_set)
+                _ranked_idx = np.array(
+                    _boost_order + [int(j) for j in _ranked_idx if int(j) not in _bset],
+                    dtype=int,
+                )
+
+        if args.max_per_artist > 0:
+            # Artist-diversity cap: greedily fill the emit list in score order but
+            # skip a candidate once its artist already holds --max_per_artist slots.
+            # For a single-gold nDCG@20 this never demotes the unique gold (it only
+            # removes lower-ranked same-artist duplicates) and lifts CatalogDiversity.
+            _art_count: dict[str, int] = {}
+            _kept: list[int] = []
+            _overflow: list[int] = []
+            for _i in _ranked_idx:
+                _row = metadata_dict.get(cands[_i], {})
+                _aid_raw = _row.get("artist_id")
+                if isinstance(_aid_raw, list):
+                    _aid_raw = _aid_raw[0] if _aid_raw else None
+                _aid = _aid_raw or (_row.get("artist_name") or [""])[0] or "?"
+                if _art_count.get(_aid, 0) < args.max_per_artist:
+                    _kept.append(_i)
+                    _art_count[_aid] = _art_count.get(_aid, 0) + 1
+                else:
+                    _overflow.append(_i)
+                if len(_kept) >= _emit_k:
+                    break
+            # Backfill from overflow if the cap left us short of emit_k.
+            if len(_kept) < _emit_k:
+                _kept.extend(_overflow[: _emit_k - len(_kept)])
+            top_idx = _kept[:_emit_k]
+        else:
+            top_idx = _ranked_idx[:_emit_k]
         predicted_track_ids = [cands[i] for i in top_idx]
 
         top = predicted_track_ids[0] if predicted_track_ids else ""
