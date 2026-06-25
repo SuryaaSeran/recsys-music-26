@@ -127,11 +127,25 @@ Then merge Claude responses -> `prediction.json`, `zip submission.zip prediction
 
 | Ver | Retrieval | Post-proc | Responses | sim nDCG@20 | Status |
 |---|---|---|---|---|---|
-| **v1** | v8d + Stage3 + infer_labels + goal_sub | none | Claude rich | 0.1864 | packaged |
-| **v2** | same top-20 as v1 | none | Opus pivot-aware | 0.1864 (tracks==v1) | RECOMMENDED — strict improvement over v1 |
-| **v3** | same as v1, emit 25 | Opus prune 5 sessions (15 explicit by-name drops), backfill 21-25 | Opus pivot-aware | unmeasured (nDCG-only risk) | optional gamble |
+| **v1** | v8d + Stage3 + infer_labels + goal_sub | none | Claude rich | 0.1864 | packaged (not submitted) |
+| **v2** | same top-20 as v1 | none | Opus pivot-aware | n/a | **SUBMITTED -> composite 0.49 (BEST)** |
+| **v3** | emit 100, Opus 2-round prune+deepen (484 hi+med drops, 60/80 sessions changed, web lookup, pad-to-20) | Opus pivot-aware (+12 regen) | n/a | **SUBMITTED -> composite 0.48 (WORSE)** |
 
-(Blind B has 3 total submissions. Update with real scores after upload.)
+Blind B: 3 total submissions, **1 left** after v2+v3.
+
+### v3 result is the definitive verdict on track manipulation
+v3 (aggressive Opus prune+deepen) scored **0.48 vs v2's 0.49**. Reconstructed split
+(CatDiv/LexDiv are exact from the file; responses ~unchanged so judge ~constant):
+remaining `0.5*nDCG+0.3*judge` fell 0.4126 -> 0.4015, i.e. **nDCG dropped ~0.022**.
+The careful, web-assisted, human-reviewable Opus prune REMOVED golds often enough to
+lose nDCG. This is the FOURTH independent confirmation (after max_per_artist cap,
+boost_named_track, pivot_suppress on dev sim) and the FIRST on the real blind set:
+**any post-hoc manipulation of the LTR top-20 regresses nDCG on TalkPlay.** The gold
+sits where the LTR put it, including inside artist clusters a human would prune.
+
+**For the last submission: do NOT touch the track list.** v2's LTR top-20 is the
+nDCG ceiling we can reach. The only positive-EV lever left is response text (judge,
+0.30 weight, text-only) — and v2's responses are already rich (~judge 3.9 inferred).
 
 ### v2 (pivot-aware responses) — the safe judge lever
 Idea: the judge scores response TEXT only (independent of tracks). On the 14
