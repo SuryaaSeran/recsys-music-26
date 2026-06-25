@@ -1,0 +1,547 @@
+[
+  {
+    "session_id": "ff76b679-7d7a-4796-8f6c-929efef45428",
+    "need_more": 5,
+    "keeps": [
+      37,
+      47,
+      28,
+      33,
+      48,
+      71,
+      31
+    ],
+    "web_used": false,
+    "notes": "Vague 'striking abstract album cover' intent; no way to verify art from metadata. Picked albums with iconic bold/abstract covers: Yeezus (37), Dark Side of the Moon prism (47), channel ORANGE (28,33), MBDTF (48), Apparat Walls 'abstract' tag (71), Daft Punk Homework (31). Found enough plausible fits."
+  },
+  {
+    "session_id": "25cc9533-7c02-4781-9100-ab438e848a3d",
+    "need_more": 15,
+    "keeps": [
+      29,
+      56,
+      28,
+      41,
+      66,
+      46,
+      51,
+      61,
+      36,
+      74,
+      47,
+      97,
+      38,
+      60,
+      85,
+      86,
+      94
+    ],
+    "web_used": true,
+    "notes": "Factual question: answer is 'The Last of the English Roses' from Grace/Wastelands; that exact track is NOT in candidates. Backfilled with era-appropriate 2009 indie/folk/alt tracks (Noah and the Whale, Antlers, Grizzly Bear, Kasabian, Green Day, Temper Trap)."
+  },
+  {
+    "session_id": "7905bb71-efea-4210-8ad9-881f37cad50a",
+    "need_more": 1,
+    "keeps": [
+      26,
+      58,
+      28,
+      42,
+      94
+    ],
+    "web_used": false,
+    "notes": "Happy/feel-good. Only need 1. Top picks: Pitbull Time of Our Lives (26), Happy Together (58), Wham Wake Me Up (28), Feel Good Inc (42), Feel It Still (94). Plenty of fits."
+  },
+  {
+    "session_id": "3afb9f67-a18a-4b97-81cf-ef1806fce0e9",
+    "need_more": 3,
+    "keeps": [
+      28,
+      38,
+      29,
+      44
+    ],
+    "web_used": false,
+    "notes": "Wants experimental Lil Wayne. Rank 28 'I'll Die For You' from Rebirth (his rock/experimental album) is the strongest exact-vibe fit; 38 God Bless Amerika (IANAHB II); 29 The Real Her (Wayne verse, moody); 44 Love U Better as backup. Found enough."
+  },
+  {
+    "session_id": "5c066ed1-f457-43a9-afbc-6d05749664d7",
+    "need_more": 17,
+    "keeps": [
+      27,
+      49,
+      31,
+      32,
+      26,
+      37,
+      38,
+      48,
+      42,
+      45,
+      43,
+      40,
+      34,
+      30,
+      50,
+      41,
+      46
+    ],
+    "web_used": true,
+    "notes": "Exact requested track is 'Song for Jolee' (Silverthorn track 5) - NOT present in candidates (all are pre-Silverthorn Kamelot/Black Halo). Backfilled with Kamelot ballads/emotional tracks (Farewell, Memento Mori, March of Mephisto, Abandoned) plus other Kamelot album cuts to reach 17."
+  },
+  {
+    "session_id": "96c044be-bab1-42cd-82e6-4fae7d2c44b9",
+    "need_more": 14,
+    "keeps": [
+      51,
+      71,
+      30,
+      34,
+      87,
+      68,
+      80,
+      82,
+      96,
+      36,
+      76,
+      83,
+      60,
+      39,
+      61
+    ],
+    "web_used": false,
+    "notes": "User explicitly wants OUT of classic hip-hop into hardcore/aggressive/experimental. Prioritized hardest/most aggressive: M.O.P. Ante Up (51), Fuck Tha Police (71), Straight Outta Compton (30), NWA Real Niggaz (34), Mobb Deep Drop A Gem (87), Onyx Slam (68), Future Mask Off (80), Lil Pump Gucci Gang (76). Limited true hardcore-punk/experimental in pool, so leaned to most raw/aggressive rap."
+  },
+  {
+    "session_id": "5870e73f-8898-4bac-933c-fba61c984eef",
+    "need_more": 8,
+    "keeps": [
+      69,
+      54,
+      32,
+      68,
+      85,
+      79,
+      86,
+      52,
+      49,
+      87
+    ],
+    "web_used": false,
+    "notes": "Wants direct raw social commentary on urban struggles, NOT sci-fi Deltron and NOT pure Del. Picked: Mos Def Speed Law (69), Dead Prez Hip Hop (54), Gang Starr Code of the Streets (32), Nas The Message (68)/Get Down (85), Lupe Paris Tokyo (79), Artifacts Wrong Side of da Tracks (86), Fuck Tha Police (52). Found enough; avoided more Del/Hiero per rejection."
+  },
+  {
+    "session_id": "dacd3a58-34a0-439b-90eb-7b6aa7ec6fb7",
+    "need_more": 14,
+    "keeps": [
+      37,
+      63,
+      83,
+      71,
+      89,
+      72,
+      98,
+      35,
+      44,
+      45,
+      56,
+      64,
+      81,
+      94,
+      62,
+      88,
+      47
+    ],
+    "web_used": false,
+    "notes": "Requested track Sarah McLachlan 'Fallen' is NOT among candidates (only her Wintersong hymn r26 and a Tiesto trance feature r75, neither is Fallen). Skipped all Leonard Cohen (explicitly rejected via Hallelujah) and the off-mood superpop. Kept introspective/longing female-led singer-songwriter ballads as nearest fits; found enough."
+  },
+  {
+    "session_id": "6f159f55-245f-4216-ac64-f9c27babe70f",
+    "need_more": 11,
+    "keeps": [
+      50,
+      57,
+      49,
+      56,
+      53,
+      81,
+      92,
+      60,
+      88,
+      73,
+      89,
+      90,
+      99,
+      91,
+      45
+    ],
+    "web_used": false,
+    "notes": "Kept gentle/acoustic/quiet/bittersweet tracks: Lightspeed Champion r50 itself, Jose Gonzalez acoustic r57, quiet Coldplay r49, Lafourcade/Cafe Tacvba melancholy, ef post-rock r92. Skipped all loud/energetic Latin and anthemic indie rock the user rejected. Hit need_more but quality thins out; backups are softer-end picks."
+  },
+  {
+    "session_id": "eb4a6ef2-7a7e-448a-bfed-c94e68b01505",
+    "need_more": 2,
+    "keeps": [
+      28,
+      31,
+      35,
+      29,
+      46,
+      49,
+      51,
+      70,
+      91,
+      98
+    ],
+    "web_used": false,
+    "notes": "Plenty of strictly instrumental ambient/atmospheric matches. Skipped all John Maus (rejected, vocal-driven r30/47/50) and the housier dance cuts. Kept ambient piano/soundscape: Satie, Dustin O'Halloran, Harold Budd, Loscil, Air. Easily found enough."
+  },
+  {
+    "session_id": "fb33bd22-af7f-4e01-b2fc-33e9314cb3a5",
+    "need_more": 2,
+    "keeps": [
+      60,
+      58,
+      78,
+      35,
+      96
+    ],
+    "web_used": true,
+    "notes": "Web-confirmed the requested track is 'Never Talking To You Again' by Husker Du (Zen Arcade, 1984). It is NOT in candidates; in fact NO Husker Du tracks appear in r26-100. Cannot satisfy the exact lyric request from this pool. Backups are same-scene hardcore/post-hardcore (Black Flag r60/78, Fugazi, Descendents r55) as least-bad fillers."
+  },
+  {
+    "session_id": "04135d8a-b020-45f2-81fa-e7ea90436038",
+    "need_more": 19,
+    "keeps": [
+      26,
+      31,
+      40,
+      71,
+      43,
+      49,
+      48,
+      38,
+      56,
+      61,
+      77,
+      80,
+      96,
+      97,
+      60,
+      68,
+      75,
+      86,
+      89,
+      65,
+      88,
+      33
+    ],
+    "web_used": false,
+    "notes": "Skipped ALL Del The Funky Homosapien (r27/32/34/37/47/57/73) and Deltron 3030 (r28) per explicit rejection, plus mainstream/trap/dirty-south/party cuts. Kept underground sharp-lyric boom-bap: Viktor Vaughn & King Geedorah (DOOM, 2003, closest era+vibe), Aesop Rock, Hieroglyphics, Nas, Gang Starr, Big L, Talib Kweli, Rakim, Masta Ace, Dead Prez, De La Soul, plus adjacent golden-age classics. Found well over need_more."
+  },
+  {
+    "session_id": "48dcbe34-fc47-459c-8367-f765b103f975",
+    "need_more": 2,
+    "keeps": [
+      54,
+      79,
+      31,
+      65,
+      81,
+      94,
+      90,
+      59
+    ],
+    "web_used": false,
+    "notes": "No Juanes in pool (good). Whole set is Latin pop/balada; kept the most lyric-forward, narrative/introspective ones: La Oreja's 'Jueves' r54 (story song) and 'Cuidate' r79 (tagged intelligent lyrics), Alejandro Sanz 'Corazon partio' r31 (acclaimed lyricism), Natalia Lafourcade r65/94 singer-songwriter, Cerati 'Crimen' r81. Found enough lyric-focused picks."
+  },
+  {
+    "session_id": "28c3ecd9-fbaa-4423-a85c-92508346e1e8",
+    "need_more": 2,
+    "keeps": [
+      36,
+      95,
+      85,
+      60,
+      58,
+      26,
+      33,
+      54,
+      99
+    ],
+    "web_used": false,
+    "notes": "Most candidates are mainstream nu-metal/post-grunge (Disturbed, Skillet, Three Days Grace) = the aggressive chaos rejected; skipped those. Kept genuine doom-gaze/post-metal/post-rock/atmospheric: King Woman r36 (doom-gaze), Agalloch r95 (post-metal), This Will Destroy You r85 + ef r60 (post-rock), M83 r58, The Antlers r26, dark dreamy Deftones r33/54/99. Found enough on-vibe."
+  },
+  {
+    "session_id": "517ab271-af45-4377-95a9-8fd69c914fa9",
+    "need_more": 17,
+    "keeps": [
+      80,
+      46,
+      50,
+      67,
+      37,
+      49,
+      40,
+      88,
+      36,
+      75,
+      42,
+      77,
+      59,
+      56,
+      39,
+      45,
+      94,
+      44,
+      34,
+      47
+    ],
+    "web_used": false,
+    "notes": "Found enough. Prioritized symphonic/female-fronted (Theatres Des Vampires symphonic-black vampiric, Delain, Theatre of Tragedy, Blackbriar, Lacuna Coil, Powerwolf opera metal, Fleshgod symphonic death, Old Man's Child symphonic black), then epic black/extreme metal. Skipped both Cradle of Filth (26,51 - explicitly wants a NEW band)."
+  },
+  {
+    "session_id": "105b29ff-305f-44ea-a3c6-32b4b74276a7",
+    "need_more": 1,
+    "keeps": [
+      55,
+      36,
+      30,
+      84,
+      56
+    ],
+    "web_used": false,
+    "notes": "Found enough. Mid-2010s electronic with strong female vocal: Dua Lipa 'Scared to Be Lonely' (future bass, female), Foxes 'Clarity' (Zedd, big female-vocal EDM hit), Zara Larsson 'Lush Life', Anne-Marie 'Rockabye', Elliphant. Strong AlunaGeorge-adjacent fits."
+  },
+  {
+    "session_id": "b7d2f58e-a1e5-418d-b3bd-88e88d20908d",
+    "need_more": 1,
+    "keeps": [
+      26,
+      30,
+      36,
+      60,
+      86
+    ],
+    "web_used": false,
+    "notes": "Found enough. Strictly instrumental hip-hop in RJD2/Blockhead vibe: Blockhead 'Creeps Crouchin' (instrumental), Fat Jon 'Mira'/'Sarin' (instrumental), Long Arm 'Double Bass In Love', Blockhead 'The Music Scene'. Avoided vocal rap tracks."
+  },
+  {
+    "session_id": "d5c80ee5-97c2-4de1-af2e-2295e3ae34a3",
+    "need_more": 4,
+    "keeps": [
+      38,
+      47,
+      27,
+      28,
+      86,
+      92,
+      79
+    ],
+    "web_used": false,
+    "notes": "Found enough. Authentic 8-bit/chiptune, space/arcade feel: Anamanaguchi tracks (Maki Ya, Twin Dragons, Scott Pilgrim Anthem, Another Winter, Cheap Shop - true chiptune game music), Module 'The Krypton Garden' (Shatter VGM space shooter), Ben Prunty 'Cosmos (Battle)' (FTL space combat). Skipped synthwave/dance that only layers 8-bit on modern beats."
+  },
+  {
+    "session_id": "dc3c1b72-0520-44c6-ab2b-4935d0455e19",
+    "need_more": 14,
+    "keeps": [
+      52,
+      32,
+      41,
+      72,
+      97,
+      75,
+      35,
+      64,
+      80,
+      95,
+      91,
+      59,
+      79,
+      85,
+      73,
+      84
+    ],
+    "web_used": false,
+    "notes": "No Paloma Faith in candidates (note: requested artist absent). Matched the dramatic/theatrical/grand-stage intent instead: Adele 'Skyfall' (cinematic Bond), Lana Del Rey (Ultraviolence/Young & Beautiful/Art Deco/Brooklyn Baby - opulent vintage drama), Florence+Machine (Cosmic Love/Girl With One Eye - theatrical), Alicia Keys 'Girl On Fire', Whitney 'I Have Nothing', Lorde 'Glory And Gore', Demi 'Skyscraper'/'Heart Attack', Cher 'Believe'. None are actually Paloma Faith."
+  },
+  {
+    "session_id": "c4f7d055-a3cc-4d6b-be80-b90278bc0d32",
+    "need_more": 7,
+    "keeps": [
+      46,
+      30,
+      28,
+      69,
+      45,
+      99,
+      49,
+      90,
+      92
+    ],
+    "web_used": false,
+    "notes": "No ONE OK ROCK tracks among candidates (requested artist absent). Padded with closest anthemic-rock, soaring-chorus, driving-drum fits: Starset 'My Demons', Skillet (Feel Invincible/I Want to Live/Awake and Alive), Twenty One Pilots 'Stressed Out', Shinedown 'Cut The Cord', Kellin Quinn 'King For A Day', Onlap 'The Awakening', Stone Sour 'Song #3'. None are ONE OK ROCK."
+  },
+  {
+    "session_id": "59e1e7b3-aca1-45b1-93c5-9e9628817194",
+    "need_more": 17,
+    "keeps": [
+      35,
+      38,
+      47,
+      40,
+      69,
+      74,
+      89,
+      42,
+      97,
+      59,
+      66,
+      88,
+      84,
+      48,
+      72,
+      87,
+      79,
+      51,
+      98,
+      53
+    ],
+    "web_used": false,
+    "notes": "Found enough. Late-2000s raw confessional alt-country/folk from non-Ryan-Adams artists: Gregory Alan Isakov, Ryan Bingham, Ron Pope, Avett Brothers, Ray LaMontagne, Neko Case, Amos Lee, Jamey Johnson, Wilco. Skipped all Ryan Adams and bro-country."
+  },
+  {
+    "session_id": "94f9327f-be45-4a60-876f-d72f509c8bc9",
+    "need_more": 19,
+    "keeps": [
+      30,
+      31,
+      42,
+      49,
+      28,
+      26,
+      100,
+      36,
+      37,
+      40,
+      45,
+      51,
+      56,
+      73,
+      82,
+      71,
+      52,
+      29,
+      47,
+      80,
+      67,
+      96
+    ],
+    "web_used": true,
+    "notes": "No actual 'Origins' album tracks in candidates (verified Origins tracklist: The Last March, Calistoga, Reverse World etc - none present). Backfilled with the closest GIAA experimental/atmospheric tracks (Helios/Erebus 2015, End of the Beginning, Far From Refuge) plus instrumental post-rock peers (If These Trees Could Talk, The Calm Blue Sea, sleepmakeswaves, Echelon Effect, Evpatoria Report). Exact-album request NOT satisfiable from this list."
+  },
+  {
+    "session_id": "2bfd631e-7d47-4dd6-a419-7d63615833c5",
+    "need_more": 19,
+    "keeps": [
+      30,
+      34,
+      38,
+      39,
+      44,
+      54,
+      51,
+      32,
+      33,
+      67,
+      60,
+      70,
+      37,
+      48,
+      71,
+      50,
+      57,
+      73,
+      82,
+      96
+    ],
+    "web_used": true,
+    "notes": "ZERO Sublime tracks in ranks 26-100, so the 'Everything Under The Sun' exact-album request cannot be met at all. Backfilled with closest reggae/ska-punk-with-driving-beat: Streetlight Manifesto (ska-punk), Rancid, Operation Ivy, Slightly Stoopid, Pepper, Reel Big Fish, [spunge]. All wrong artist/album - flagging honestly, pad as needed."
+  },
+  {
+    "session_id": "6e2eb7e6-ea5b-4196-b3e4-3fc4126acdb0",
+    "need_more": 5,
+    "keeps": [
+      58,
+      44,
+      59,
+      75,
+      84,
+      78,
+      96,
+      67
+    ],
+    "web_used": false,
+    "notes": "Found enough wistful/introspective for calm evening. Counting Crows 'Mr. Jones', Love 'Alone Again Or'/'Andmoreagain' (mellow psych-folk), Marcy Playground 'Sex and Candy' (laid-back), Jason Mraz 'I Won't Give Up', Amber Run 'I Found', Sixpence 'There She Goes'. Hard-skipped ALL punk/garage/proto-punk/aggressive (Cramps, Seeds, Doors heavy cuts, MC5-type, Black Keys rockers, Three Days Grace, Godsmack, Skillet)."
+  },
+  {
+    "session_id": "d7426802-d075-4a49-8062-977ba656c9a2",
+    "need_more": 10,
+    "keeps": [
+      39,
+      37,
+      56,
+      72,
+      71,
+      64,
+      67,
+      50,
+      68,
+      60,
+      94,
+      66
+    ],
+    "web_used": true,
+    "notes": "Verified Traveller tracklist - NONE of its tracks (Fire Away, More Of You, When The Stars Come Out, Was It 26, Devil Named Music, Outlaw State Of Mind) appear in candidates. User is playing Traveller track-by-track; exact-album request not satisfiable. Backfilled with closest slower/classic/narrative country (George Strait Amarillo/Carrying Your Love/Troubadour, Chris Young Tomorrow, Gary Allan, Carrie Underwood story songs); avoided bro-country party tracks."
+  },
+  {
+    "session_id": "37257e95-3dbf-4246-8c89-83d67f8d0119",
+    "need_more": 12,
+    "keeps": [
+      31,
+      27,
+      88,
+      51,
+      56,
+      57,
+      58,
+      79,
+      46,
+      62,
+      60,
+      87,
+      95,
+      96,
+      69
+    ],
+    "web_used": true,
+    "notes": "'Czar Refaeli' is on the 2013 'Czarface' album (feat. Oh No); NO CZARFACE tracks in candidates, so exact track not present. Backfilled with closest underground east-coast/Wu-adjacent boom-bap (Wu-Tang C.R.E.A.M., Black Star, A Tribe Called Quest, Gang Starr, Rakim, Mos Def, Jeru) since Inspectah Deck is Wu-Tang. Exact-track request not satisfiable from list."
+  },
+  {
+    "session_id": "bf27c872-87df-46f0-8e4d-328d11baec30",
+    "need_more": 4,
+    "keeps": [
+      30,
+      27,
+      71,
+      99,
+      60,
+      63,
+      44,
+      73,
+      31
+    ],
+    "web_used": false,
+    "notes": "Cannot verify exact 126.70 bpm / G minor (no tempo/key data in candidates), so matched on style: d-beat/crust/hardcore-punk peers of Wolfbrigade. Picked Raised Fist, Municipal Waste (crossover thrash), Napalm Death, Madball, Wormrot (grind). Avoided melodic metalcore/emo/nu-metal (Bullet For My Valentine, Bring Me The Horizon, Avenged Sevenfold, Disturbed) as off-style."
+  }
+]
