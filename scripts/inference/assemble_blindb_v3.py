@@ -34,7 +34,10 @@ for b in range(4):
 
 # Metadata + responses
 meta_ds = load_dataset("talkpl-ai/TalkPlayData-Challenge-Track-Metadata")
-allt = concatenate_datasets([meta_ds["all_tracks"], meta_ds["test_tracks"]])
+_meta_splits = [meta_ds["all_tracks"]]
+if "test_tracks" in meta_ds:
+    _meta_splits.append(meta_ds["test_tracks"])
+allt = concatenate_datasets(_meta_splits) if len(_meta_splits) > 1 else _meta_splits[0]
 meta = {r["track_id"]: r for r in allt}
 def line(t):
     r = meta.get(t, {})

@@ -132,8 +132,41 @@ Then merge Claude responses -> `prediction.json`, `zip submission.zip prediction
 | **v3** | emit 100, Opus 2-round prune+deepen (484 hi+med drops, 60/80 sessions changed, web lookup, pad-to-20) | Opus pivot-aware (+12 regen) | n/a | **SUBMITTED -> composite 0.48 (WORSE)** |
 | v4 | v3 pipeline, high-confidence drops ONLY (273 drops, 42/80 changed, 11 deepened, 1 padded) | Opus sharpened (78w avg, LexDiv 0.752) | n/a | packaged, NOT submitted (prune risk, see below) |
 | **v4b** | **same top-20 as v2 (untouched LTR)** | none | v4 Opus sharpened responses | 0.1864 (= v1/v2) | **FINAL PICK for last slot** |
+| v5-cand | no SASRec buckets, tier1 LTR (60-feat, no bucket features) | none | not yet generated | **0.1894** (golden-200 sim) | exploratory, untested on real blind |
 
 Blind B: 3 total submissions, **1 left** after v2+v3.
+
+### No-bucket ablation (2026-07-05) — why it is NOT the safe default
+Removing SASRec Stage-3 bucket expansion and rescoring with the 60-feat tier1 LTR
+(`ltr_v8d_tier1_nl31_lr0p08.txt`, no bucket features) scores **0.1894** on the
+golden-200 Blind-B-sim vs **0.1864** for the shipped s3cap-with-buckets config
+(`blind_b_v8d_s3cap_v1.json` retrieval) -- a real, reproducible **+0.003** gap on
+sim. Prediction file: `exp/inference/blind_b/blind_b_v8d_tier1_nobucket.json`
+(80 sessions, 20 ids each, no responses yet).
+
+**Why this is not an automatic swap for the last slot:** the identical ablation
+on Blind A inverted direction between sim and the real submission -- buckets
+cost dev nDCG (0.1864 -> 0.1854) but IMPROVED the real Blind A score (0.3990 ->
+0.3997, see `plan/CURRENT_BEST_ITERATION.md`). We have zero real-Blind-B signal
+for the no-bucket config, and only one slot to spend finding out. Per-user
+decision (2026-07-05): prepare a full no-bucket submission (generate responses,
+package) alongside v4b, review both, then pick one -- do not auto-ship the
+higher-sim option blind.
+
+Repro command for the sim eval:
+```bash
+python scripts/inference/run_inference_fusion_recall_expansion.py \
+  --tid blindbsim_golden200_nobucket_tier1 \
+  --session_ids_file plan/GOLDEN_HOLDOUT_SESSIONS.json \
+  --simulate_blindb --simulate_blindb_coldfrac 0.5 --topk 20 \
+  --tt_model models/twotower_v8d/final --tt_index cache/twotower_v8d --anchor_v8d \
+  --tt_pool 2000 --artist_expansion --last_nn_k 100 --last_nn_src 2 \
+  --bm25_missing_floor 0.05 --qwen_pool 500 --cf_pool 200 --session_mean_k 100 \
+  --cooccur_table cache/cooccur/next_song_leakfree_6k_excluded.npz --cooccur_ks 300,150,50 \
+  --infer_progress_labels --goal_substitute_positive \
+  --ltr_model models/ltr/ltr_v8d_tier1_nl31_lr0p08.txt
+python scripts/inference/evaluate_local.py --pred exp/inference/devset/blindbsim_golden200_nobucket_tier1.json
+```
 
 ### Final-slot decision: v4b over v4
 The judge is text-only, so v4's prune has ZERO judge benefit; it only moves nDCG.
