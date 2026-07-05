@@ -393,7 +393,10 @@ def t12_count_keywords(text: str, sorted_kw_list: list[str]) -> tuple[int, set[s
 
 print("Loading track metadata...")
 meta_ds = load_dataset("talkpl-ai/TalkPlayData-Challenge-Track-Metadata")
-all_tracks = concatenate_datasets([meta_ds["all_tracks"], meta_ds["test_tracks"]])
+_meta_splits = [meta_ds["all_tracks"]]
+if "test_tracks" in meta_ds:
+    _meta_splits.append(meta_ds["test_tracks"])
+all_tracks = concatenate_datasets(_meta_splits) if len(_meta_splits) > 1 else _meta_splits[0]
 metadata_dict = {row["track_id"]: row for row in all_tracks}
 
 # Precompute popularity percentile lookup (rank-percentile, 0-1)

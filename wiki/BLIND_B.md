@@ -130,8 +130,20 @@ Then merge Claude responses -> `prediction.json`, `zip submission.zip prediction
 | **v1** | v8d + Stage3 + infer_labels + goal_sub | none | Claude rich | 0.1864 | packaged (not submitted) |
 | **v2** | same top-20 as v1 | none | Opus pivot-aware | n/a | **SUBMITTED -> composite 0.49 (BEST)** |
 | **v3** | emit 100, Opus 2-round prune+deepen (484 hi+med drops, 60/80 sessions changed, web lookup, pad-to-20) | Opus pivot-aware (+12 regen) | n/a | **SUBMITTED -> composite 0.48 (WORSE)** |
+| v4 | v3 pipeline, high-confidence drops ONLY (273 drops, 42/80 changed, 11 deepened, 1 padded) | Opus sharpened (78w avg, LexDiv 0.752) | n/a | packaged, NOT submitted (prune risk, see below) |
+| **v4b** | **same top-20 as v2 (untouched LTR)** | none | v4 Opus sharpened responses | 0.1864 (= v1/v2) | **FINAL PICK for last slot** |
 
 Blind B: 3 total submissions, **1 left** after v2+v3.
+
+### Final-slot decision: v4b over v4
+The judge is text-only, so v4's prune has ZERO judge benefit; it only moves nDCG.
+The prune direction is settled by 4 independent measurements, including the real
+blind (v3: -0.01 composite, nDCG -0.022). v4's lighter high-conf-only prune (220
+of 273 drops within ranks 1-20) is the same bet at smaller size, still negative
+expected value. v4b keeps v2's track list bit-identical (nDCG floor = v2's, the
+best measured) and swaps only the responses for v4's sharpened set (avg 78 words,
+the v07 judge-4.4 sweet spot, vs v2's longer drafts). Only possible deltas vs 0.49:
+judge up (target), LexDiv ~flat (0.752 vs 0.745). Downside is bounded near zero.
 
 ### v3 result is the definitive verdict on track manipulation
 v3 (aggressive Opus prune+deepen) scored **0.48 vs v2's 0.49**. Reconstructed split
