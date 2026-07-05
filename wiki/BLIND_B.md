@@ -132,7 +132,7 @@ Then merge Claude responses -> `prediction.json`, `zip submission.zip prediction
 | **v3** | emit 100, Opus 2-round prune+deepen (484 hi+med drops, 60/80 sessions changed, web lookup, pad-to-20) | Opus pivot-aware (+12 regen) | n/a | **SUBMITTED -> composite 0.48 (WORSE)** |
 | v4 | v3 pipeline, high-confidence drops ONLY (273 drops, 42/80 changed, 11 deepened, 1 padded) | Opus sharpened (78w avg, LexDiv 0.752) | n/a | packaged, NOT submitted (prune risk, see below) |
 | **v4b** | **same top-20 as v2 (untouched LTR)** | none | v4 Opus sharpened responses | 0.1864 (= v1/v2) | **FINAL PICK for last slot** |
-| v5-cand | no SASRec buckets, tier1 LTR (60-feat, no bucket features) | none | not yet generated | **0.1894** (golden-200 sim) | exploratory, untested on real blind |
+| v5-cand | no SASRec buckets, tier1 LTR (60-feat, no bucket features) | none | Opus hand-written (90w avg, LexDiv 0.768, CatDiv 0.858) | **0.1894** (golden-200 sim) | packaged, NOT submitted, awaiting decision vs v4b |
 
 Blind B: 3 total submissions, **1 left** after v2+v3.
 
@@ -152,6 +152,12 @@ for the no-bucket config, and only one slot to spend finding out. Per-user
 decision (2026-07-05): prepare a full no-bucket submission (generate responses,
 package) alongside v4b, review both, then pick one -- do not auto-ship the
 higher-sim option blind.
+
+v5-cand is now fully packaged (`exp/inference/blind_b/submissions/v5cand_v8d_tier1_nobucket/submission.zip`)
+with hand-written responses generated the same way as v2/v4 (4 parallel subagents,
+80 sessions, honest-mismatch framing preserved, no templates). Two ready candidates
+for the last slot: **v4b** (proven track list, real 0.49) vs **v5-cand** (+0.003 sim,
+unproven on real blind). Decision pending.
 
 Repro command for the sim eval:
 ```bash
