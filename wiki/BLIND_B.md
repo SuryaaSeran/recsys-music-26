@@ -133,6 +133,7 @@ Then merge Claude responses -> `prediction.json`, `zip submission.zip prediction
 | v4 | v3 pipeline, high-confidence drops ONLY (273 drops, 42/80 changed, 11 deepened, 1 padded) | Opus sharpened (78w avg, LexDiv 0.752) | n/a | packaged, NOT submitted (prune risk, see below) |
 | **v4b** | **same top-20 as v2 (untouched LTR)** | none | v4 Opus sharpened responses | 0.1864 (= v1/v2) | **FINAL PICK for last slot** |
 | v5-cand | no SASRec buckets, tier1 LTR (60-feat, no bucket features) | none | Opus hand-written (90w avg, LexDiv 0.768, CatDiv 0.858) | **0.1894** (golden-200 sim) | packaged, NOT submitted, awaiting decision vs v4b |
+| v5-cand-v2 | same top-20 pool as v5-cand, 4 sessions re-ranked (rank-1 swap only, no new track_ids) | v5-cand responses, 5 sessions rewritten | 89.4w avg, LexDiv 0.769, CatDiv 0.858 | n/a (rank-1 swap within already-scored pool) | packaged, NOT submitted, awaiting decision vs v4b |
 
 Blind B: 3 total submissions, **1 left** after v2+v3.
 
@@ -155,9 +156,28 @@ higher-sim option blind.
 
 v5-cand is now fully packaged (`exp/inference/blind_b/submissions/v5cand_v8d_tier1_nobucket/submission.zip`)
 with hand-written responses generated the same way as v2/v4 (4 parallel subagents,
-80 sessions, honest-mismatch framing preserved, no templates). Two ready candidates
-for the last slot: **v4b** (proven track list, real 0.49) vs **v5-cand** (+0.003 sim,
-unproven on real blind). Decision pending.
+80 sessions, honest-mismatch framing preserved, no templates).
+
+**v5-cand-v2 correction (2026-07-05):** a manual review pass (human-readable
+JSON checked in a separate session against the true request/track-name text)
+found 5 sessions where the honest-mismatch framing was undermined by rank
+order or wording: `04135d8a` (OutKast "Ms. Jackson" promoted to rank 1 over
+more Deltron/Dan-The-Automator tracks the user had already moved past),
+`48dcbe34` (Natalia Lafourcade "Hasta la Raíz" promoted over more Juanes),
+`59e1e7b3` (Johnny Cash "Hurt" promoted over more Ryan Adams), `37257e95`
+(CZARFACE "Czartacus" promoted over Apollo Brown, with the response correctly
+NOT claiming to have found the unfindable "Czar Refaeli"), and `93647ac5`
+(response tightened; Migos "Versace (Remix)" was already correctly rank 1,
+no track change). All 5 fixes are pure re-ranks within the existing 20-track
+pool per session — no track_id was added, removed, or looked up externally;
+`scripts/inference/rebuild_blindb_v5cand_from_hr.py` asserts the track SET is
+unchanged and only order/response text differ. Output:
+`exp/inference/blind_b/blind_b_v8d_tier1_nobucket_resp_v2.json`, packaged at
+`exp/inference/blind_b/submissions/v5cand_v2_v8d_tier1_nobucket/submission.zip`.
+
+Two ready candidates for the last slot: **v4b** (proven track list, real 0.49)
+vs **v5-cand-v2** (+0.003 sim, unproven on real blind, now with the 5-session
+correction applied). Decision pending.
 
 Repro command for the sim eval:
 ```bash
