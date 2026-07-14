@@ -1,0 +1,13 @@
+{
+  "bm25_retrieve_top500": {
+    "median_ms": 0.5,
+    "p90_ms": 0.6,
+    "n": 20
+  },
+  "ltr_score_3100cands_67feat": {
+    "median_ms": 3.4,
+    "p90_ms": 3.7,
+    "n": 20
+  },
+  "rss_mb": 280.0
+}

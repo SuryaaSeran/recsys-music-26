@@ -1,0 +1,36 @@
+{
+  "note": "Consolidated from bench_cpu_components.py (TT encode, ANN, sizes), bench_bm25_ltr.py (BM25, LTR, isolated to avoid a torch+lightgbm+bm25s native-threadpool deadlock), and isolated OMP=1 runs for Qwen encode (deadlocks under OMP>1) and combined RSS. OMP_NUM_THREADS=4 unless noted.",
+  "hardware": {
+    "chip": "Apple M4",
+    "mem_bytes": "17179869184",
+    "ncpu": "10",
+    "omp_threads": "4"
+  },
+  "artifact_sizes": {
+    "tt_adapter+tokenizer (models/twotower_v8d/final)": "24.2 MB",
+    "tt_index (47071x768 f32)": "146.5 MB",
+    "qwen3_meta index (54476x1024 f32)": "225.3 MB",
+    "qwen3_lyrics index": "225.3 MB",
+    "clap index": "113.7 MB",
+    "cooccur table (6k-excluded)": "1.7 MB",
+    "ltr s3cap (67 feat)": "0.6 MB",
+    "ltr tier1 (60 feat)": "0.4 MB",
+    "sasrec ckpt": "22.2 MB",
+    "semantic ids": "8.0 MB",
+    "bm25 index": "21.9 MB"
+  },
+  "latencies_cpu": {
+    "tt_query_encode (e5-base, ~400-tok anchor, OMP=4)": {"median_ms": 46.8, "p90_ms": 47.8, "n": 20},
+    "tt_passage_encode_batch32 (index-build unit, OMP=4)": {"median_ms": 193.3, "p90_ms": 194.1, "n": 5},
+    "ann_matmul_top2000 (47071x768, OMP=4)": {"median_ms": 2.2, "p90_ms": 2.3, "n": 20},
+    "qwen3_0.6b_query_encode (OMP=1, isolated)": {"median_ms": 601.2, "n": 5, "note": "deadlocks under OMP>1 in this env; single-thread number"},
+    "qwen_ann_top500 (54476x1024, OMP=4)": {"median_ms": 3.2, "p90_ms": 3.3, "n": 20},
+    "bm25_retrieve_top500 (isolated)": {"median_ms": 0.5, "p90_ms": 0.6, "n": 20},
+    "ltr_score_3100cands_67feat (isolated)": {"median_ms": 3.4, "p90_ms": 3.7, "n": 20}
+  },
+  "memory": {
+    "rss_bm25_ltr_only_mb": 280.0,
+    "rss_both_encoders_plus_tt_and_qwen_indexes_mb": 1847.0,
+    "note": "Full pipeline adds qwen_lyrics/clap/bm25/cooccur/sasrec/semantic/ltr (~0.4 GB) -> ~2.3 GB, well under 16 GB. Base encoders (e5-base ~1.1 GB, Qwen3-0.6B) loaded from HF cache."
+  }
+}
