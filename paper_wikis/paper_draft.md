@@ -1,10 +1,5 @@
 # A CPU-Scale Conversational Music Recommender: Fused Retrieval and Learned Ranking for the TalkPlayData Challenge
 
-*(Word-ready draft. Headings map to the ACM `acmart` template styles: the block
-below the title is `Abstract`, `CCS CONCEPTS`, `KEYWORDS`, then numbered
-`Head1`/`Head2` sections. Paste each block into the corresponding styled
-paragraph of the interim ACM template.)*
-
 **Authors:** FirstName Surname; FirstName Surname; FirstName Surname
 Department Name, Institution/University Name, City, State, Country
 
@@ -13,25 +8,22 @@ Department Name, Institution/University Name, City, State, Country
 ## ABSTRACT
 
 We present a conversational music recommender for the TalkPlayData Challenge
-(ACM RecSys 2026) that ranks tracks and generates the assistant response at each
-turn of a multi-turn dialogue, and that trains and serves in its entirety on a
-single consumer desktop with no discrete GPU. The system has three stages:
-(i) a *recall* stage that fuses nine inexpensive retrievers into a candidate pool
-of roughly three thousand tracks; (ii) a *rescore* stage that arbitrates the pool
-with a gradient-boosted learning-to-rank model over 67 per-candidate features;
-and (iii) a decoupled *response* stage. The only trained neural component is a
-LoRA adaptation of a 279M-parameter multilingual text encoder, fine-tuned on
-(dialogue, next-track) pairs with a role-tagged dialogue anchor. We show that
-correctly handling the dataset's goal-progress feedback signal, which is both
-off-by-one in time and contaminated with user-rejected tracks, is the single
-highest-value engineering step, and that the same feedback channel can be
-reconstructed from raw dialogue text when it is withheld at test time. On the
-blind generalization set our system reaches a composite score of 0.49.
+(ACM RecSys 2026) that, at each dialogue turn, ranks tracks from a 47,071-track
+catalog and generates the assistant response, and that trains and serves entirely
+on a single consumer desktop with no discrete GPU. Retrieval is a union of nine
+inexpensive sources whose candidates are arbitrated by a gradient-boosted
+learning-to-rank model over 67 features; the strongest feature is simply how many
+sources agree on a candidate. The only trained neural component is a LoRA
+adaptation of a 279M-parameter multilingual encoder over a role-tagged dialogue
+anchor. Our central finding is that the dataset's goal-progress feedback signal is
+both misaligned in time and contaminated with user-rejected tracks, that fixing it
+is the highest-value step in the project, and that the same signal can be
+reconstructed from raw dialogue when it is withheld at test time. The system
+reaches a composite score of 0.49 on the blind generalization set.
 
 ## CCS CONCEPTS
 
 - Information systems -> Recommender systems; Learning to rank; Language models.
-- Computing methodologies -> Learning latent representations.
 
 ## KEYWORDS
 
@@ -43,72 +35,44 @@ retrieval, LoRA fine-tuning, preference elicitation, CPU-scale systems
 ## 1 Introduction
 
 The TalkPlayData Challenge frames music recommendation as a multi-turn dialogue.
-At each turn the system must (a) rank 20 tracks from a catalog of 47,071 such
-that the single logged next track ranks high, and (b) produce the assistant's
-natural-language reply. Submissions are scored by a composite metric:
+At each turn the system must (a) rank 20 tracks from a catalog of 47,071 so that
+the single logged next track ranks high, and (b) produce the assistant's reply.
+Submissions are scored by a composite metric:
 
 > Score = 0.50 * nDCG@20 + 0.10 * CatalogDiversity + 0.10 * LexicalDiversity + 0.30 * JudgeNorm,
-> with JudgeNorm = (judge_score - 1) / 4.
+> JudgeNorm = (judge_score - 1) / 4.
 
-The judge is a large language model that reads only the response text along two
-disclosed axes (personalization, explanation quality); it never sees the track
-list. With one relevant item per turn, nDCG@20 reduces to 1/log2(rank+1) when the
-gold track appears in the top 20 and 0 otherwise.
+The judge is a language model that reads only the response text (personalization
+and explanation quality); it never sees the track list. The blind generalization
+set ("Blind B") is harder than the labeled data: the conversation goal, the
+per-turn goal-progress assessments, and the model's internal thoughts are removed,
+and half of its 80 sessions are cold-start with no user profile.
 
-The blind generalization set ("Blind B") is deliberately harder than the
-labeled data: the conversation goal, the per-turn goal-progress assessments, and
-the model's internal "thoughts" are all removed, and half of its 80 sessions are
-cold-start with no user identifier or profile.
+Our system has three stages. *Recall* runs nine retrievers per turn and merges
+their outputs into one deduplicated pool (mean ~3,100 candidates); no single
+source exceeds ~59% gold recall at 500 candidates, but the fused pool reaches
+~89% on the blind-simulated holdout. *Rescore* is a LightGBM LambdaMART model that
+scores every candidate from 67 features and emits the top 20, replacing hand-tuned
+score fusion. *Respond* is decoupled: because the judge reads only text, the
+response may describe the ranked list but never reorders it. All three stages run
+on one Apple M4 machine (16 GB unified memory, no GPU), and the only trained
+neural component is the LoRA encoder of Section 3.
 
-This paper describes the retrieval-and-ranking system behind our best blind
-result (composite 0.49). We focus on three components: the fused recall
-architecture and the exact construction of each retriever (Section 3); the
-LoRA-adapted dialogue encoder and the goal-progress feedback fix that made it
-work (Section 4); and the learning-to-rank rescorer and its full feature set
-(Section 5). Section 6 gives a compact account of the iterative gains, Section 7
-the efficiency profile, and Section 8 concludes.
+**Contributions.** (1) A recall design that treats retrieval as *set union, not
+weighted fusion*: each source contributes candidates and per-source features, and
+a learned ranker decides how far to trust each; multi-source agreement is the
+single strongest feature. (2) A dialogue-aware retriever: a LoRA fine-tune of
+`multilingual-e5-base` over a role-tagged anchor encoding prior turns,
+recommendations, and per-turn reactions. (3) A treatment of the goal-progress
+feedback signal that is off-by-one in time and contaminated with rejected tracks,
+plus a test-time reconstruction of that signal from raw dialogue.
 
-**Contributions.**
-
-1. A recall design that treats retrieval as *set union, not weighted fusion*:
-   nine independent retrievers each contribute candidates and per-source
-   features, and a learned ranker decides how much to trust each. The strongest
-   single feature is multi-source agreement.
-2. A dialogue-aware retriever: a LoRA fine-tune of `multilingual-e5-base` on a
-   role-tagged anchor that encodes prior turns, recommendations, and per-turn
-   user reactions.
-3. A treatment of the goal-progress feedback signal, which we show is off-by-one
-   in time and contaminated with rejected tracks, together with a test-time
-   reconstruction of that signal from raw dialogue when it is withheld.
-
-## 2 System Overview
-
-The pipeline is three sequential stages.
-
-**Recall.** Nine retrievers run per turn and their outputs are merged into one
-deduplicated candidate pool (mean ~3,100 tracks). No single retriever exceeds
-~59% gold recall at 500 candidates; the fused pool reaches ~89% on the
-blind-simulated holdout.
-
-**Rescore.** A LightGBM LambdaMART model scores every pooled candidate from 67
-features and emits the top 20. This learned ranker replaces hand-tuned score
-fusion and lets any retriever contribute candidates without a manually assigned
-weight.
-
-**Respond.** Because the judge reads only text, response generation is decoupled
-from ranking: the response may describe the ranked list but never reorders it.
-This stage is out of scope here.
-
-All three stages run on one consumer machine (Apple M4, 16 GB unified memory, no
-discrete GPU). The only trained neural component is the LoRA encoder of Section 4.
-
-## 3 Recall Architecture
+## 2 Recall Architecture
 
 Recall is a union of nine retrievers (Table 1). Each candidate carries the
 per-source scores and origin flags that later become ranker features. The design
-rule is to *add candidates, never re-weight sources by hand*: even
-low-precision sources help because source membership feeds the agreement feature
-of Section 5.
+rule is to *add candidates, never re-weight sources by hand*: even low-precision
+sources help, because source membership feeds the agreement feature of Section 4.
 
 **Table 1: The nine recall sources.**
 
@@ -117,234 +81,164 @@ of Section 5.
 | 1 | BM25 (Okapi) | top-500 | lexical match on name/artist/album/tags |
 | 2 | Two-tower ANN | top-2000 | fine-tuned conversational-intent match |
 | 3 | Last-track NN | 100 x last 2 | "more like what just played" |
-| 4 | Artist expansion | full discographies | tracks by any retrieved/mentioned artist |
-| 5 | Qwen3-0.6B NN | top-500 | second dense opinion, different embedding space |
+| 4 | Artist expansion | discographies | tracks by any retrieved/mentioned artist |
+| 5 | Qwen3-0.6B NN | top-500 | second dense opinion, different space |
 | 6 | CF-BPR | top-200 | collaborative signal, warm users only |
 | 7 | Session-mean NN | top-100 | neighbors of the session taste centroid |
-| 8 | Co-occurrence | 300/150/50 | tracks that followed recent history tracks |
+| 8 | Co-occurrence | 300/150/50 | tracks that followed recent history |
 | 9 | SASRec buckets | cap 300 | next semantic-bucket expansion (optional) |
 
-### 3.1 Lexical retrieval (source 1)
+*Lexical (source 1).* BM25 (via `bm25s`) indexes each track's name, artist, album,
+and tag list; indexing the tags matters because conversational requests use
+genre/mood/era vocabulary that only tags carry. The query is the latest user
+message plus the goal, culture, last four played tracks, and last four turns;
+older turns are excluded because they dilute the current request's IDF mass.
 
-BM25 (Okapi, via `bm25s`) indexes each track's name, artist, album, and tag
-list. Indexing the *tag list* is important: conversational requests use
-genre/mood/era vocabulary ("something mellow and acoustic") that only the tags
-carry. The query is assembled from the latest user message, the stated goal, the
-listener culture, the last four played tracks (name/artist/tags), and the last
-four dialogue turns. Turns older than four are deliberately excluded: adding them
-dilutes the inverse-document-frequency mass of the current request. Turns whose
-vocabulary misses the index are smoothed by a score floor (0.05) so they are not
-dropped from the pool.
+*Dense (sources 2, 5).* Two independent dense retrievers give complementary
+spaces. Source 2 is our fine-tuned two-tower encoder (Section 3): the dialogue
+anchor is encoded once and matched against a precomputed 47,071 x 768
+L2-normalized matrix by exact brute-force matmul (top-2000); at this catalog size
+an approximate index is unnecessary and only loses recall. Source 5 is the
+competition-provided `Qwen3-Embedding-0.6B` metadata embedding, whose different
+pretraining recovers gold tracks the two-tower misses; both cosines become ranker
+features.
 
-### 3.2 Dense retrieval (sources 2, 5)
+*Neighborhood (sources 3, 7).* Query-side retrieval is complemented by expansion
+around the history: the nearest neighbors of the last two played tracks (source 3)
+and of the mean two-tower embedding of the session's history, the taste centroid
+(source 7). Both are cheap matmuls against the same matrix; rejected history tracks
+are filtered from these seeds first (Section 3.3).
 
-Two independent dense retrievers provide complementary embedding spaces.
+*Catalog structure (sources 4, 8, 9).* Artist expansion (source 4) is a
+dictionary lookup that adds the full, popularity-capped discography of every
+retrieved or mentioned artist; it is the cheapest high-recall source and matters
+because sessions are often artist deep-dives. Co-occurrence (source 8) is a count
+table of tracks that most often followed the last one/two/three history tracks in
+training sessions. Semantic-bucket expansion (source 9) is an optional auxiliary:
+an RQ-VAE assigns each track a semantic ID and a small SASRec predicts the next
+bucket, but next-bucket prediction has a low ceiling (hit@3 = 42.1%), so an
+eight-source configuration without it reaches parity.
 
-*Source 2* is our fine-tuned two-tower encoder (Section 4). At query time the
-dialogue anchor is encoded once and compared to a precomputed matrix of 47,071
-track embeddings (768-dim, L2-normalized). Retrieval is an exact brute-force
-matmul followed by a top-2000 partial sort; at this catalog size an approximate
-index (FAISS/HNSW) is unnecessary and would only lose recall.
+*Collaborative (source 6).* A BPR matrix-factorization model adds each warm user's
+top-200 tracks; cold sessions simply receive nothing from this source and the
+pipeline degrades gracefully.
 
-*Source 5* is the competition-provided `Qwen3-Embedding-0.6B` metadata
-embedding. The track side is precomputed; the query side is encoded by the frozen
-0.6B model with the model's instruction prefix, then matched by exact matmul
-(top-500). Because it is a different pretraining distribution, it recovers gold
-tracks that the two-tower misses, and both cosines become ranker features.
+## 3 Dialogue-Aware Retriever
 
-### 3.3 Neighborhood expansion (sources 3, 7)
+Off-the-shelf dense retrieval failed here: conversational queries do not embed
+near track-metadata text in general-purpose spaces, so dense recall requires
+fine-tuning on (dialogue, gold-track) pairs.
 
-Dense retrieval on the *query* is complemented by dense expansion around the
-*history*. Source 3 takes the last two played tracks and adds each track's 100
-nearest neighbors in two-tower space. Source 7 computes the mean two-tower
-embedding of the session's history tracks (the session taste centroid) and adds
-its 100 nearest neighbors. Both are cheap matmuls against the same track matrix
-as source 2. When history contains user-rejected tracks these seeds are filtered
-first (Section 4.3).
+### 3.1 Model and anchor
 
-### 3.4 Catalog-structure expansion (sources 4, 8, 9)
-
-These sources exploit structure in the catalog and in training sessions rather
-than the query text.
-
-*Artist expansion (source 4)* is a dictionary lookup: for every artist retrieved
-by another source or named in the dialogue, add that artist's full discography
-(capped by popularity). It is the cheapest high-recall source in the system (no
-model), and it matters because TalkPlay sessions are frequently artist
-deep-dives.
-
-*Co-occurrence (source 8)* is a count table built from training sessions: for the
-last one, two, and three history tracks it adds the tracks that most often
-followed them (top 300/150/50). One subtlety is leakage: an early version built
-this table on sessions that also appeared in the ranker's training dump, which
-inflated the co-occurrence feature (gold tracks were hit in 81.9% of those turns
-versus 28.1% of clean turns) and would have collapsed on unseen data. Rebuilding
-the table with all 6,000 dump sessions excluded removes the leak.
-
-*Semantic-bucket expansion (source 9)* is optional. A two-level RQ-VAE (64
-codes/level) over track attribute embeddings assigns each track a semantic ID; a
-small SASRec model predicts the next bucket from the session's bucket sequence,
-and members of the top-3 predicted buckets join the pool. Because next-bucket
-prediction has a low ceiling (hit@3 = 42.1%), this source is a capped auxiliary
-only, and an eight-source configuration without it reaches parity.
-
-### 3.5 Collaborative signal (source 6)
-
-Source 6 is a Bayesian Personalized Ranking (BPR-MF) model over user-track
-interactions, restricted to warm users; it adds each user's top-200 tracks. Cold
-sessions simply receive no candidates from this source and the pipeline degrades
-gracefully.
-
-## 4 Dialogue-Aware Retriever: A LoRA-Adapted E5 Encoder
-
-Off-the-shelf dense retrieval failed on this task: conversational queries do not
-embed near track-metadata text in general-purpose spaces. Dense retrieval here
-requires fine-tuning on (dialogue, gold-track) pairs. The remaining problem is
-context length and label quality.
-
-### 4.1 Model and anchor construction
-
-The base encoder is `intfloat/multilingual-e5-base` (XLM-RoBERTa, 12 layers,
-768-dim, 512-token window, 279M parameters), chosen for its 512-token context
-(an earlier 256-token model truncated the user's request on 81% of anchors). We
-fine-tune with LoRA (rank 32, alpha 64, dropout 0.05) on the query/key/value
-projections: 1.8M trainable parameters, 0.64% of the model. Full fine-tuning does
-not fit in 16 GB of unified memory; LoRA plus gradient checkpointing does.
-
-The query anchor is *role-tagged* so the encoder sees explicit dialogue
-structure:
+The base encoder is `intfloat/multilingual-e5-base` (XLM-RoBERTa, 768-dim,
+512-token window, 279M parameters), chosen for its context length (an earlier
+256-token model truncated the user's request on 81% of anchors). We fine-tune with
+LoRA (rank 32, alpha 64) on the query/key/value projections: 1.8M trainable
+parameters, 0.64% of the model; full fine-tuning does not fit in 16 GB, LoRA plus
+gradient checkpointing does. The query anchor is *role-tagged* so the encoder sees
+dialogue structure:
 
 ```
-query: [PROFILE] {age} . {country} . {gender} . {culture} . {language}
-[GOAL] {listener_goal} ({specificity})
-[T1] USER: {q1} | REC: {track - artist} | ASST: {r1} | REACTION: liked/rejected
-...
-[NOW] USER: {current request}
+query: [PROFILE] {age}.{country}.{gender}.{culture} [GOAL] {goal}
+[T1] USER:{q1} | REC:{track-artist} | ASST:{r1} | REACTION:liked/rejected
+... [NOW] USER:{current request}
 ```
 
-A tokenizer-aware greedy builder always includes a fixed core (profile, goal,
-latest request) and then inserts history turns most-recent-first, each only if it
-fits a 510-token budget, with per-turn fallbacks (full -> short -> minimal). The
-user's current request can never be truncated; only ~5% of anchors reach the
-budget. Documents use the symmetric form
-`passage: {name} by {artist} | Album: {album} | Tags: {tags} | {year}`. The
-`query:`/`passage:` prefixes match E5 pretraining and must be identical across
-training, index build, and inference.
+A tokenizer-aware greedy builder always keeps a fixed core (profile, goal, latest
+request) and inserts history turns most-recent-first within a 510-token budget; the
+current request can never be truncated. Documents use the symmetric form
+`passage: {name} by {artist} | Album: {album} | Tags: {tags} | {year}`, with the
+E5 `query:`/`passage:` prefixes identical across training, index build, and
+inference.
 
-### 4.2 Training and use
+### 3.2 Training and serving
 
 We train with MultipleNegativesRankingLoss (InfoNCE with in-batch negatives) plus
-two to three explicit hard negatives per row (Section 4.3), for 3 epochs at
-effective batch 32 (batch 8, gradient accumulation 4), learning rate 1e-4, 200
-warmup steps, with gradient checkpointing. Training data is ~74K anchor/positive
-pairs drawn from the 15,199 training sessions, excluding the 6,000 sessions
-reserved for the ranker's feature dump.
+two to three explicit hard negatives per row (Section 3.3): 3 epochs, effective
+batch 32, learning rate 1e-4. Training uses ~74K anchor/positive pairs, excluding
+the 6,000 sessions reserved for the ranker's feature dump. At serving time we ship
+a 7 MB LoRA adapter applied to the cached base encoder, and query a one-pass
+47,071 x 768 track index by brute-force matmul.
 
-At serving time we ship the LoRA adapter (a 7 MB `safetensors` file, 24 MB with
-its tokenizer) and apply it to the base encoder loaded from cache; the adapter
-can optionally be merged into a standalone encoder. The track index is one
-forward pass over the catalog, stored as a 47,071 x 768 float32 matrix
-(146.5 MB) and queried by brute-force matmul.
+### 3.3 Using the goal-progress feedback signal
 
-### 4.3 Using the goal-progress feedback signal
+Each training turn carries a `goal_progress_assessment` (GPA): a label recording
+whether the *previous* recommendation moved the listener toward their goal, i.e. a
+per-recommendation accept/reject signal. It is the richest preference feedback in
+the dataset and the trickiest part of the system, because the raw label cannot be
+used as-is and it is removed entirely from the blind set.
 
-Each turn in the training data carries a `goal_progress_assessment` (GPA): a
-label recording whether the previous recommendation moved the listener toward
-their goal. In effect it is a per-recommendation accept/reject signal, and it is
-the richest preference feedback the dataset offers. It is also the trickiest part
-of the system, for two reasons: the raw label cannot be used as-is, and it is
-removed entirely from the blind test set. We handle these in turn.
+**First, align it in time.** The GPA at turn *T* is the reaction to the track
+recommended at turn *T-1*: the system acts at one turn and the user responds at the
+next. A naive reading attaches each reaction to the wrong track, so we shift every
+GPA back one turn (`turn_number - 1`). This alignment is a prerequisite for
+everything below.
 
-**First, align the label in time.** The GPA recorded at turn *T* is the user's
-reaction to the track recommended at turn *T-1*: the system acts at one turn and
-the user responds at the next. A naive reading attaches each reaction to the
-wrong track. We therefore shift every GPA back by one turn (indexing
-`turn_number - 1`) so that each track is paired with the reaction it actually
-caused. This one-line alignment is a prerequisite for everything below.
+**Second, stop treating rejected tracks as positives.** After alignment, 43.2% of
+turns carry a gold track the user *rejected* (`DOES_NOT_MOVE_TOWARD_GOAL`).
+Training these as positives teaches both models to rank rejected tracks highly. We
+use them differently: the ranker *drops* such turns (a rejected track is not a
+valid positive), while the retriever keeps the rejected track as a *hard negative*
+for that session, exactly the near-miss the encoder should learn to push away. We
+prioritize confirmed session rejections, then BM25 near-misses, then same-artist
+distractors, then in-batch negatives, and never sample an accepted track as a
+negative.
 
-**Second, stop training on rejected tracks as if they were positives.** After
-alignment, 43.2% of turns turn out to carry a gold track that the user
-*rejected* (`DOES_NOT_MOVE_TOWARD_GOAL`): the logged system played it, and the
-listener said it missed. Treating these as positive examples teaches both models
-to rank rejected tracks highly. We use them differently in each model:
+**Third, act on the feedback at inference.** The aligned GPA drives three
+behaviors: the history-based retrievers (sources 3, 7 and the BM25 query) are
+seeded only from *accepted* tracks, so a streak of rejections does not fill the
+pool with neighbors of refused tracks; the ranker receives features contrasting a
+candidate against the accepted- and rejected-history centroids (Section 4); and
+the anchor's goal slot is replaced by the most recently accepted track ("more like
+the last thing that worked").
 
-- *Ranker:* we drop these turns from training. A rejected track is not a valid
-  positive, and the turn provides no usable positive label.
-- *Retriever:* we drop the rejected track from the positive pairs, but keep it as
-  a *hard negative* for that session. It shares the same intent context as the
-  request yet was explicitly refused, so it is exactly the kind of near-miss the
-  encoder should learn to push away. Per anchor we prioritize confirmed session
-  rejections, then BM25 near-misses, then same-artist distractors, then ordinary
-  in-batch negatives, and we never sample a track the user *accepted* as a
-  negative.
+**Finally, reconstruct it when missing.** The blind set removes GPA, so we infer
+it from the dialogue: a rule-based classifier labels each user follow-up accept or
+reject from keyword banks (accept: "love it", "more like this"; reject: "not
+what", "something different"). The inferred label fills the anchor's `REACTION`
+slot and drives the same seed filtering and features. On the blind-simulated
+holdout the system scores as well with this proxy as with the true label, which is
+what makes it viable.
 
-**Third, act on the feedback at inference, not just in training.** Knowing which
-past tracks were accepted or rejected changes what the system should retrieve and
-how it should rank. We use the aligned GPA three ways at inference:
+## 4 Learning-to-Rank Rescoring
 
-- *Seed filtering:* the history-based retrievers (last-track NN, session-mean NN,
-  and the BM25 query) are seeded only from *accepted* history tracks, so a streak
-  of rejections does not fill the pool with neighbors of tracks the user just
-  refused.
-- *Session-state features:* the ranker receives features summarizing the accepted
-  versus rejected history (Section 5, group D), such as a candidate's similarity
-  to the accepted-history centroid versus the rejected-history centroid.
-- *Goal substitution:* the anchor's goal slot is replaced by the most recently
-  accepted track, expressing "more like the last thing that worked."
+The rescorer is a LightGBM LambdaMART model (nDCG@20 objective) that scores every
+pooled candidate and returns the top 20. It replaces hand-tuned linear fusion and
+is the pivotal choice: it *decouples recall from precision*, absorbs heterogeneous
+features (cosines, ranks, count tables, metadata, session counters), and handles
+extreme imbalance natively (one positive per ~3,100 candidates) via pairwise
+gradients within each turn's group. Training runs the full retrieval in dump mode
+on 6,000 held-out sessions, yielding 24,718 groups and 77.7M rows (positive rate
+0.00035); the model has 67 features (5-fold session CV nDCG@20 = 0.3144) and is a
+0.6 MB file. The features fall into six groups (Table 2). Group B dominates:
+multi-source agreement accounts for roughly 57% of total model gain and is the
+feature that transfers best when goal and GPA are withheld on the blind set.
 
-**Finally, reconstruct the signal when it is missing.** The blind test set
-removes GPA, so at test time we infer it from the dialogue itself. A lightweight
-rule-based classifier reads each user follow-up and labels it accept or reject
-using two small keyword banks (accept: "love it", "perfect", "more like this";
-reject: "not what", "something different", "too slow"). The inferred label fills
-the anchor's `REACTION` slot and drives the same seed filtering and session-state
-features described above. This proxy is noisier than the true label, but on the
-blind-simulated holdout the system scores as well with the inferred signal as with
-the real one, which is what makes the approach viable on the blind set.
+**Table 2: Rescorer feature groups (67 features).**
 
-## 5 Learning-to-Rank Rescoring
+| Group | Features |
+|---|---|
+| A. Retrieval scores | two-tower cosine and rank; Qwen3 metadata and lyrics cosines; CLAP audio cosine; CF cosine; BM25 reciprocal rank; co-occurrence rank |
+| B. Source agreement | `n_sources` and transforms: count of sources returning the candidate; a de-facto ensemble vote |
+| C. Track metadata | popularity percentile; years since release; request-tag overlap |
+| D. Session state (GPA) | cosine to accepted- and to rejected-history centroids; artist-in-rejected-set; accepted/rejected turn counts; consecutive rejections; CF distance to history |
+| E. Intent extraction | era/genre/mood keywords parsed from the request; candidate era/genre match; album continuity; within-artist popularity and transition ranks; bucket-match counts |
+| F. Sequential ID | SASRec bucket-origin and rank (optional configuration) |
 
-The rescorer is a LightGBM LambdaMART model (`lambdarank` objective, nDCG@20)
-that scores every pooled candidate and returns the top 20. It replaces hand-tuned
-linear fusion and is the pivotal architectural choice: it *decouples recall from
-precision*, absorbs heterogeneous feature types (cosines, reciprocal ranks, count
-tables, metadata, session counters), and handles extreme class imbalance natively
-(one positive per ~3,100 candidates) because LambdaMART forms pairwise gradients
-within each turn's group.
+## 5 Results
 
-**Training data.** The full nine-source retrieval is run in dump mode on 6,000
-held-out training sessions, writing one row per (turn, candidate): 24,718 groups,
-77.7M rows, positive rate 0.00035. Splits are at the session level, and the same
-6,000 sessions are excluded from two-tower training and the co-occurrence table.
-
-**Hyperparameters.** 31 leaves, learning rate 0.08, L2 0.1, minimum sum Hessian
-0.1, path smoothing 1.0, feature and bagging fraction 0.8, truncation level 30,
-5-fold session-level cross-validation with early stopping (75 rounds). The
-production model has 67 features (cross-validated nDCG@20 = 0.3144) and is a
-0.6 MB text file.
-
-The 67 features fall into six groups (Table 2).
-
-**Table 2: Rescorer feature groups.**
-
-| Group | Features | Construction |
-|---|---|---|
-| A. Retrieval scores | two-tower cosine and a rank sigmoid; Qwen3 metadata and lyrics cosines; CLAP audio cosine; CF cosine; BM25 reciprocal rank; co-occurrence rank signal | the raw per-source votes, read directly from each retriever's output for the candidate |
-| B. Multi-source agreement | `n_sources`, `log1p(n_sources)`, `n_sources/7` | count of independent sources that returned the candidate; a de-facto ensemble vote |
-| C. Track metadata | popularity percentile; years since release; tag overlap with the request | from static catalog metadata and a set intersection of request tokens with track tags |
-| D. Session state (from GPA/H2) | cosine to the mean embedding of accepted history; cosine to the mean embedding of rejected history; artist-in-rejected-set flag; counts of accepted and rejected turns; consecutive-rejection counter; CF distance to last and mean history | computed per candidate against the accepted/rejected partitions of the session history |
-| E. Intent extraction (Tier 1) | era/genre/mood/instrument keywords parsed from the request; candidate era and genre match; album continuity (same album as last track, album seen in recent window); within-artist popularity and transition ranks; semantic-bucket match counts | keyword extraction over the request text matched against candidate tags and release year, plus per-artist ranking statistics |
-| F. Sequential-ID (optional) | SASRec bucket-origin and bucket-rank features | present only in the nine-source configuration |
-
-Group B is by far the most important: multi-source agreement accounts for roughly
-57% of total model gain. It is also the feature that transfers best across
-distributions, which is why the system is robust when goal and GPA are withheld
-on the blind set.
-
-## 6 Iterative Improvements
-
-Rather than a full narrative, Table 3 lists only the changes that moved the
-metric, with the resulting development nDCG@20 (1,000 sessions).
+Table 3 lists only the changes that moved the development nDCG@20 (1,000
+sessions). The two largest single jumps are non-model changes: excluding
+already-played tracks from BM25 (+0.035), and replacing linear fusion with a
+learned ranker, which unlocked every later feature. The goal-progress fixes of
+Section 3.3 account for the final step to 0.1864. On the blind sets the same
+system scores nDCG@20 = 0.3997 (Blind A) and composite 0.49 (Blind B). Two
+negative results shaped the design: post-hoc editing of the ranker's top-20 to
+"clean up obvious mistakes" regressed nDCG in every trial, because logged
+next-tracks often lie inside the same artist cluster a curator would prune; and
+zero-shot cross-encoder and LLM rerankers underperformed the feature-based
+LambdaMART while costing orders of magnitude more compute.
 
 **Table 3: Development nDCG@20 after each load-bearing change.**
 
@@ -360,34 +254,40 @@ metric, with the resulting development nDCG@20 (1,000 sessions).
 | + E5 role-tagged dialogue anchor | 0.1748 |
 | + GPA-aware inference and intent features | 0.1864 |
 
-The two largest single jumps are non-model changes: excluding already-played
-tracks (+0.035) and replacing linear fusion with a learned ranker (that unlocked
-every later feature). The GPA fixes of Section 4.3 account for the final step to
-0.1864. On the blind sets the same system scores nDCG@20 = 0.3997 (Blind A) and
-composite 0.49 (Blind B).
+## 6 Efficiency and Scalability
 
-## 7 Efficiency
+Every stage is CPU-native; Table 4 reports measured latencies on the M4 with all
+neural components forced to CPU. Exact brute-force similarity over the
+47,071 x 768 matrix is a single matmul, so no approximate index is needed at this
+catalog scale, and every stage except the encoder forward passes is single-digit
+milliseconds. Per-turn cost is dominated by the two query encoders; the frozen
+Qwen3-0.6B is by far the most expensive and can be dropped in the eight-source
+configuration, taking per-turn neural work below 100 ms. The trained artifact is a
+24 MB LoRA adapter and the full serving process fits in under ~2 GB of RAM, so the
+entire train/evaluate/iterate loop, including the one LoRA fine-tune, runs on a
+single 16 GB desktop, which is what made rapid iteration practical.
 
-Every stage is CPU-native. Exact brute-force similarity over the 47,071 x 768
-matrix is one matmul (median 2.2 ms), so no approximate index is needed at this
-catalog scale. Per-turn neural cost is dominated by the two encoder forward
-passes; the classical stages are single-digit milliseconds (BM25 0.5 ms, ranking
-3,100 candidates 3.4 ms). The trained artifact is a 24 MB LoRA adapter; the full
-serving process fits under ~2 GB of RAM. The complete train/evaluate/iterate loop,
-including the one LoRA fine-tune, runs on a single 16 GB consumer machine, which
-is what made rapid iteration feasible.
+**Table 4: Measured CPU latency and footprint (median over 20 runs).**
 
-## 8 Conclusion
+| Operation | Cost |
+|---|---|
+| Two-tower query encode (e5-base) | 47 ms |
+| Exact ANN, 47,071 x 768, top-2000 | 2.2 ms |
+| Qwen3-0.6B query encode | 601 ms |
+| BM25 retrieve, top-500 | 0.5 ms |
+| LambdaMART score, 3,100 x 67 features | 3.4 ms |
+| Serving memory, all components loaded | 1.85 GB |
+| Trained artifact (LoRA adapter) | 24 MB |
 
-A conversational music recommender does not require a GPU cluster or a
-per-candidate neural reranker to be competitive. Fusing many inexpensive
-retrievers and letting a gradient-boosted ranker arbitrate them, with a single
-LoRA-adapted dialogue encoder for dense recall, reaches a composite of 0.49 on the
-blind generalization set while training and serving on one desktop. The largest
-gains came not from model capacity but from data hygiene: excluding seen tracks,
-learning the fusion instead of tuning it, and correctly handling a goal-progress
-feedback signal that is off-by-one in time, contaminated with rejected tracks, and
-absent at test time.
+## 7 Conclusion
+
+A conversational music recommender need not use a GPU cluster or a per-candidate
+neural reranker to be competitive. Fusing many inexpensive retrievers, letting a
+gradient-boosted ranker arbitrate them, and adding a single LoRA-adapted dialogue
+encoder reaches composite 0.49 on the blind set while training and serving on one
+desktop. The largest gains came from data hygiene rather than model capacity, and
+in particular from correctly handling a goal-progress feedback signal that is
+off-by-one in time, contaminated with rejected tracks, and absent at test time.
 
 ## ACKNOWLEDGMENTS
 
@@ -395,22 +295,16 @@ Insert acknowledgments here.
 
 ## REFERENCES
 
-[1] Wang, L. et al. Multilingual E5 Text Embeddings. (`intfloat/multilingual-e5-base`).
+[1] Wang, L. et al. 2024. Multilingual E5 Text Embeddings: A Technical Report. arXiv:2402.05672.
 
-[2] Ke, G. et al. 2017. LightGBM: A Highly Efficient Gradient Boosting Decision
-Tree. In NeurIPS.
+[2] Ke, G. et al. 2017. LightGBM: A Highly Efficient Gradient Boosting Decision Tree. In NeurIPS.
 
-[3] Burges, C. J. C. 2010. From RankNet to LambdaRank to LambdaMART: An Overview.
-Microsoft Research Technical Report.
+[3] Burges, C. J. C. 2010. From RankNet to LambdaRank to LambdaMART: An Overview. Microsoft Research Technical Report MSR-TR-2010-82.
 
-[4] Hu, E. J. et al. 2022. LoRA: Low-Rank Adaptation of Large Language Models. In
-ICLR.
+[4] Hu, E. J. et al. 2022. LoRA: Low-Rank Adaptation of Large Language Models. In ICLR.
 
-[5] Rendle, S. et al. 2009. BPR: Bayesian Personalized Ranking from Implicit
-Feedback. In UAI.
+[5] Rendle, S. et al. 2009. BPR: Bayesian Personalized Ranking from Implicit Feedback. In UAI.
 
-[6] Kang, W.-C. and McAuley, J. 2018. Self-Attentive Sequential Recommendation
-(SASRec). In ICDM.
+[6] Kang, W.-C. and McAuley, J. 2018. Self-Attentive Sequential Recommendation. In ICDM.
 
-[7] Robertson, S. and Zaragoza, H. 2009. The Probabilistic Relevance Framework:
-BM25 and Beyond. Foundations and Trends in Information Retrieval.
+[7] Robertson, S. and Zaragoza, H. 2009. The Probabilistic Relevance Framework: BM25 and Beyond. Foundations and Trends in Information Retrieval 3, 4.
