@@ -175,8 +175,11 @@ deep-dives.
 
 *Co-occurrence (source 8)* is a count table built from training sessions: for the
 last one, two, and three history tracks it adds the tracks that most often
-followed them (top 300/150/50). The table is built with all feature-dump
-sessions excluded to avoid leakage (Section 4.3).
+followed them (top 300/150/50). One subtlety is leakage: an early version built
+this table on sessions that also appeared in the ranker's training dump, which
+inflated the co-occurrence feature (gold tracks were hit in 81.9% of those turns
+versus 28.1% of clean turns) and would have collapsed on unseen data. Rebuilding
+the table with all 6,000 dump sessions excluded removes the leak.
 
 *Semantic-bucket expansion (source 9)* is optional. A two-level RQ-VAE (64
 codes/level) over track attribute embeddings assigns each track a semantic ID; a
@@ -243,52 +246,61 @@ can optionally be merged into a standalone encoder. The track index is one
 forward pass over the catalog, stored as a 47,071 x 768 float32 matrix
 (146.5 MB) and queried by brute-force matmul.
 
-### 4.3 The goal-progress assessment fix
+### 4.3 Using the goal-progress feedback signal
 
-The dataset labels each turn with a `goal_progress_assessment` (GPA). Using it
-correctly was the highest-value work in the project, and it required three
-separate corrections.
+Each turn in the training data carries a `goal_progress_assessment` (GPA): a
+label recording whether the previous recommendation moved the listener toward
+their goal. In effect it is a per-recommendation accept/reject signal, and it is
+the richest preference feedback the dataset offers. It is also the trickiest part
+of the system, for two reasons: the raw label cannot be used as-is, and it is
+removed entirely from the blind test set. We handle these in turn.
 
-**(a) The feedback is off by one turn.** The GPA at turn *T* is the listener's
-verdict on the recommendation made at turn *T-1* (the action is taken at *t*, the
-reaction is recorded at *t+1*). Any GPA-conditioned component that indexes turn
-*T* directly is training on a label that judges the *previous* turn. All builders
-now index `turn_number - 1`.
+**First, align the label in time.** The GPA recorded at turn *T* is the user's
+reaction to the track recommended at turn *T-1*: the system acts at one turn and
+the user responds at the next. A naive reading attaches each reaction to the
+wrong track. We therefore shift every GPA back by one turn (indexing
+`turn_number - 1`) so that each track is paired with the reaction it actually
+caused. This one-line alignment is a prerequisite for everything below.
 
-**(b) 43% of "positive" tracks were user-rejected.** In the ranker's training
-dump, 43.2% of turns carry a gold track labeled `DOES_NOT_MOVE_TOWARD_GOAL`: a
-track the logged system played and the user rejected. Training these as positives
-teaches the model to rank rejected tracks highly. For the ranker we drop such
-turns entirely (a rejected gold is not a usable positive). For the retriever we
-remove them from positive pairs and *recycle the rejected tracks as
-session-level hard negatives*: same intent context, explicitly refused. The
-hard-negative priority per anchor is confirmed session rejections (up to 2), then
-BM25-hard negatives for specific-goal sessions (up to 2), then artist-repeat
-distractors (1), then in-batch negatives, with a protection rule that never
-samples a user-accepted track as a negative.
+**Second, stop training on rejected tracks as if they were positives.** After
+alignment, 43.2% of turns turn out to carry a gold track that the user
+*rejected* (`DOES_NOT_MOVE_TOWARD_GOAL`): the logged system played it, and the
+listener said it missed. Treating these as positive examples teaches both models
+to rank rejected tracks highly. We use them differently in each model:
 
-**(c) Co-occurrence leakage.** The co-occurrence table (source 8) was first built
-on sessions that overlapped the ranker feature dump. Gold tracks had
-co-occurrence hits in 81.9% of leaky turns versus 28.1% of clean turns: a 3x
-inflated feature that would collapse on blind data. Rebuilding the table with all
-6,000 dump sessions excluded removes the leak.
+- *Ranker:* we drop these turns from training. A rejected track is not a valid
+  positive, and the turn provides no usable positive label.
+- *Retriever:* we drop the rejected track from the positive pairs, but keep it as
+  a *hard negative* for that session. It shares the same intent context as the
+  request yet was explicitly refused, so it is exactly the kind of near-miss the
+  encoder should learn to push away. Per anchor we prioritize confirmed session
+  rejections, then BM25 near-misses, then same-artist distractors, then ordinary
+  in-batch negatives, and we never sample a track the user *accepted* as a
+  negative.
 
-**GPA at inference.** Beyond clean labels, GPA drives three inference behaviors.
-*Seed filtering (H1)* removes rejected tracks from the history seeds that feed
-sources 3, 7, and the BM25 query, so a run of rejections does not seed the pool
-with tracks the user just refused. *Session-state features (H2)* summarize
-accepted-versus-rejected history for the ranker (Section 5). *Goal substitution
-(H3)* replaces the goal text in the anchor with the most recently accepted track
-("more like the last thing that worked").
+**Third, act on the feedback at inference, not just in training.** Knowing which
+past tracks were accepted or rejected changes what the system should retrieve and
+how it should rank. We use the aligned GPA three ways at inference:
 
-**Reconstruction on the blind set.** Blind B removes GPA entirely. We reconstruct
-it from dialogue text: a rule-based classifier maps each user follow-up to accept
-or reject via two small regex banks (acceptance: "love it", "perfect", "more like
-this"; rejection: "not what", "something different", "too slow"). The inferred
-label fills the anchor's `REACTION` slot and drives H1 and H2; goal substitution
-fills the emptied `[GOAL]` slot. This reconstruction is noisier than true GPA but,
-measured on the blind-simulated holdout, loses nothing relative to using the real
-labels.
+- *Seed filtering:* the history-based retrievers (last-track NN, session-mean NN,
+  and the BM25 query) are seeded only from *accepted* history tracks, so a streak
+  of rejections does not fill the pool with neighbors of tracks the user just
+  refused.
+- *Session-state features:* the ranker receives features summarizing the accepted
+  versus rejected history (Section 5, group D), such as a candidate's similarity
+  to the accepted-history centroid versus the rejected-history centroid.
+- *Goal substitution:* the anchor's goal slot is replaced by the most recently
+  accepted track, expressing "more like the last thing that worked."
+
+**Finally, reconstruct the signal when it is missing.** The blind test set
+removes GPA, so at test time we infer it from the dialogue itself. A lightweight
+rule-based classifier reads each user follow-up and labels it accept or reject
+using two small keyword banks (accept: "love it", "perfect", "more like this";
+reject: "not what", "something different", "too slow"). The inferred label fills
+the anchor's `REACTION` slot and drives the same seed filtering and session-state
+features described above. This proxy is noisier than the true label, but on the
+blind-simulated holdout the system scores as well with the inferred signal as with
+the real one, which is what makes the approach viable on the blind set.
 
 ## 5 Learning-to-Rank Rescoring
 
