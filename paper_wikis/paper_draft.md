@@ -256,18 +256,25 @@ LambdaMART while costing orders of magnitude more compute.
 
 ## 6 Efficiency and Scalability
 
-Every stage is CPU-native; Table 4 reports measured latencies on the M4 with all
-neural components forced to CPU. Exact brute-force similarity over the
-47,071 x 768 matrix is a single matmul, so no approximate index is needed at this
-catalog scale, and every stage except the encoder forward passes is single-digit
-milliseconds. Per-turn cost is dominated by the two query encoders; the frozen
-Qwen3-0.6B is by far the most expensive and can be dropped in the eight-source
-configuration, taking per-turn neural work below 100 ms. The trained artifact is a
-24 MB LoRA adapter and the full serving process fits in under ~2 GB of RAM, so the
-entire train/evaluate/iterate loop, including the one LoRA fine-tune, runs on a
-single 16 GB desktop, which is what made rapid iteration practical.
+Every stage is CPU-native; Table 4 (top) reports per-component latencies with all
+neural blocks forced to CPU. Exact brute-force similarity over the 47,071 x 768
+matrix is a single matmul, so no approximate index is needed at this catalog
+scale, and every stage except the encoder passes is single-digit milliseconds.
+Measured end-to-end over the 200-session evaluation set, the full recall-plus-
+rescore pipeline runs at **2.17 s per session, about 0.27 s per turn** (Table 4,
+bottom). Of this, the rescore stage is negligible: scoring the ~3,100-candidate
+pool with LambdaMART takes 3.4 ms, roughly 1% of turn latency, so recall (the nine
+sources and their two query-encoder passes) accounts for essentially all of it.
+Even with every neural block pinned to the CPU (Table 4, top), a full turn stays
+under one second; dropping the frozen Qwen3-0.6B encoder in the eight-source
+configuration removes the single largest cost. The trained artifact is a 24 MB
+LoRA adapter and the serving process fits in under ~2 GB of RAM, so the entire
+train/evaluate/iterate loop, including the one LoRA fine-tune, runs on a single
+16 GB desktop, which is what made rapid iteration practical.
 
-**Table 4: Measured CPU latency and footprint (median over 20 runs).**
+**Table 4: Measured latency and footprint. Top: per component, all neural blocks
+forced to CPU (worst case), median over 20 runs. Bottom: end-to-end recall +
+rescore over the 200-session set, encoders on the Metal backend.**
 
 | Operation | Cost |
 |---|---|
@@ -275,9 +282,12 @@ single 16 GB desktop, which is what made rapid iteration practical.
 | Exact ANN, 47,071 x 768, top-2000 | 2.2 ms |
 | Qwen3-0.6B query encode | 601 ms |
 | BM25 retrieve, top-500 | 0.5 ms |
-| LambdaMART score, 3,100 x 67 features | 3.4 ms |
+| Rescore: LambdaMART, 3,100 x 67 features | 3.4 ms |
 | Serving memory, all components loaded | 1.85 GB |
 | Trained artifact (LoRA adapter) | 24 MB |
+| Recall stage, per turn (nine sources) | ~0.26 s |
+| Rescore stage, per turn | 3.4 ms |
+| End-to-end, per session (per turn) | 2.17 s (0.27 s) |
 
 ## 7 Conclusion
 
