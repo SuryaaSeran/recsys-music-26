@@ -6,6 +6,272 @@
 
 ---
 
+## Submitted System: Replication Guide (Blind B v2, composite 0.49)
+
+Everything below this section is the original challenge briefing. This section
+describes how to rebuild the submitted system from scratch and run inference on
+a Blind B-format dataset.
+
+The system: nine-source candidate recall (BM25, two-tower v8d + artist
+expansion + last-track NN, Qwen3 metadata embeddings, CF-BPR, session-mean NN,
+co-occurrence, SASRec semantic-bucket expansion) fused and rescored by a
+67-feature LightGBM LambdaMART ranker, with hand-written responses. Full
+technical account: `paper_wikis/paper_draft.md` and
+`wiki/PAPER_SYSTEM_ACCOUNT.md`. Submission ledger: `wiki/BLIND_B.md`.
+
+### Environment
+
+- Run every command from the repo root. All cache/model paths are relative.
+- Python env: `.venv` (key packages: `torch`, `sentence-transformers`, `peft`,
+  `transformers`, `lightgbm`, `bm25s`, `datasets`, `numpy`, `polars`).
+- Data downloads from HuggingFace: `talkpl-ai/TalkPlayData-Challenge-Dataset`,
+  `-Track-Metadata`, `-Track-Embeddings`, `-User-Embeddings`,
+  `-Blind-B` (fetched automatically by the scripts).
+
+### Stage 0 — Precomputed embedding caches
+
+```bash
+python scripts/train/build_fusion_index.py
+```
+
+Writes `cache/cf_bpr/`, `cache/clap/`, `cache/qwen3_meta/`,
+`cache/qwen3_attr/`, `cache/qwen3_lyrics/`, `cache/user_cf_bpr.json`.
+
+### Stage 0b — BM25 index
+
+The pipeline reads `cache/bm25/track_metadata` (plain bm25s index over
+lowercased `track_name + artist_name + album_name + release_date + tag_list`,
+both metadata splits concatenated, 47,071 tracks). It was originally built
+lazily by `scripts/archive/v0_bm25/inference/run_inference_bm25.py`; the exact
+equivalent as a standalone snippet:
+
+```python
+import json, os, bm25s
+from datasets import load_dataset, concatenate_datasets
+
+meta = load_dataset("talkpl-ai/TalkPlayData-Challenge-Track-Metadata")
+tracks = concatenate_datasets([meta["all_tracks"], meta["test_tracks"]])
+fields = ["track_name", "artist_name", "album_name", "release_date", "tag_list"]
+
+def text(row):
+    parts = []
+    for f in fields:
+        v = row.get(f, "")
+        if isinstance(v, list):
+            v = " ".join(v)
+        if v:
+            parts.append(str(v))
+    return " ".join(parts).lower()
+
+ids = [r["track_id"] for r in tracks]
+model = bm25s.BM25()
+model.index(bm25s.tokenize([text(r) for r in tracks]))
+os.makedirs("cache/bm25/track_metadata", exist_ok=True)
+model.save("cache/bm25/track_metadata")
+json.dump(ids, open("cache/bm25/track_metadata/track_ids.json", "w"))
+```
+
+### Stage 0c — Co-occurrence table (leak-free)
+
+```bash
+python scripts/train/build_cooccur_table.py \
+  --out cache/cooccur/next_song_leakfree_6k_excluded.npz \
+  --exclude_n 6000 --exclude_seed 42
+```
+
+The 6,000 excluded sessions (seed 42) are the LTR feature-dump sessions; the
+exclusion prevents the ranker from seeing its own training sessions in the
+co-occurrence source.
+
+### Stage 1 — Two-tower retriever (TT v8d)
+
+```bash
+# 1. Training pairs (46,364 train + 7,352 valid, 9,199 sessions)
+python scripts/train/build_twotower_v8d_data.py \
+  --out_dir data/twotower_v8d \
+  --exclude_n 6000 --exclude_seed 42 --hard_negs 5
+
+# 2. LoRA fine-tune of intfloat/multilingual-e5-base
+python scripts/train/train_twotower_lora.py \
+  --data_dir data/twotower_v8d \
+  --out_dir models/twotower_v8d \
+  --base_model intfloat/multilingual-e5-base \
+  --lora_r 32 --lora_alpha 64 --lora_dropout 0.05 \
+  --epochs 3 --batch_size 8 --grad_accum 4 \
+  --lr 1e-4 --warmup_steps 200 --gradient_checkpointing \
+  --use_hard_neg --n_hard_negs 2
+
+# 3. Encode the catalog
+python scripts/train/build_twotower_index.py \
+  --model models/twotower_v8d/final \
+  --out_dir cache/twotower_v8d \
+  --doc_prefix "passage: " --batch_size 32
+```
+
+`models/twotower_v8d/final` is an unmerged PEFT adapter (24.2 MB); the base
+encoder loads from the HF cache at runtime.
+
+### Stage 2 — Semantic IDs + SASRec (bucket expansion source)
+
+This stage depends on an external repo that is NOT tracked here:
+
+```bash
+git clone https://github.com/eugeneyan/semantic-ids-llm third_party/semantic-ids-llm
+git -C third_party/semantic-ids-llm checkout b730d483fff40db97905e3473f8db21f4bf2376b
+```
+
+`run_rqvae_talkplay.py`, `run_sasrec_talkplay.py`, `extract_semantic_ids.py`,
+and `semantic_id_retrieval.py` import `src/` modules from that clone.
+
+Input parquet: export the `attributes-qwen3_embedding_0.6b` column of the
+Track-Embeddings dataset to
+`third_party/semantic-ids-llm/data/output/TalkPlay_items_attributes_qwen3.parquet`
+with columns `parent_asin` (track_id) and `embedding` (no dedicated script;
+one-time polars export). Then:
+
+```bash
+# RQ-VAE codebooks (2 levels x 64 codes over attributes embeddings)
+python scripts/train/run_rqvae_talkplay.py \
+  --levels 2 --codes 64 --run_name runC2_attributes_L2C64 \
+  --embeddings third_party/semantic-ids-llm/data/output/TalkPlay_items_attributes_qwen3.parquet
+
+# Assign semantic IDs to the catalog
+python scripts/inference/extract_semantic_ids.py \
+  --ckpt models/rqvae/runC2_attributes_L2C64/final_model.pth \
+  --parquet third_party/semantic-ids-llm/data/output/TalkPlay_items_attributes_qwen3.parquet \
+  --out_dir cache/semantic_ids/runC2_attributes_L2C64
+
+# SASRec training sequences from train sessions
+python scripts/train/build_sasrec_semantic_data.py \
+  --sids_dir cache/semantic_ids/runC2_attributes_L2C64 \
+  --out third_party/semantic-ids-llm/data/output/TalkPlay_sequences_with_semantic_ids_train.parquet \
+  --out_eval third_party/semantic-ids-llm/data/output/TalkPlay_sequences_with_semantic_ids_eval.parquet
+
+# Train SASRec over semantic-ID sequences
+python scripts/train/run_sasrec_talkplay.py \
+  --num_levels 2 --codebook_size 64 --run_name sasrec_runC2_L2C64
+```
+
+Config record for this stage (dims, epochs, achieved val NDCG@10 0.6745):
+`plan/SEMANTIC_IDS_C2_ARTIFACTS.md`.
+
+Note: only `--sasrec_ckpt` (Stage 3 expansion at inference) and the builders
+above need the clone. `--semantic_ids_dir` alone reads the precomputed cache
+and has no external dependency.
+
+### Stage 3 — LTR feature dump + LambdaMART training
+
+```bash
+# Feature dump: 6,000 train sessions, ~89.7M rows, 27,166 groups
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+python scripts/inference/run_inference_fusion_recall_expansion.py \
+  --split train --sessions 6000 --shuffle_seed 42 \
+  --tt_model models/twotower_v8d/final --tt_index cache/twotower_v8d \
+  --anchor_v8d \
+  --tt_pool 2000 --artist_expansion --last_nn_k 100 --last_nn_src 2 \
+  --bm25_missing_floor 0.05 \
+  --qwen_pool 500 --cf_pool 200 --session_mean_k 100 \
+  --cooccur_table cache/cooccur/next_song_leakfree_6k_excluded.npz \
+  --cooccur_ks 300,150,50 \
+  --skip_no_progress --use_goal_progress \
+  --semantic_ids_dir cache/semantic_ids/runC2_attributes_L2C64 \
+  --sasrec_ckpt models/sasrec/sasrec_runC2_L2C64/best_model.pth \
+  --sasrec_top_k_l0 3 --sasrec_max_cands 300 \
+  --write_features exp/analysis/ltr_v8d_tier1_semC2_stage3cap_6k_features.npz
+
+# Train the 67-feature booster (5-fold CV nDCG@20 = 0.3144)
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+python scripts/train/train_ltr_lightgbm.py \
+  --features exp/analysis/ltr_v8d_tier1_semC2_stage3cap_6k_features.npz \
+  --out models/ltr/ltr_v8d_s3cap_nl31_lr0p08.txt \
+  --n_folds 5 --num_leaves 31 --lr 0.08 --num_iter 1000 --early_stop 75 \
+  --lambda_l2 0.1 --min_sum_hessian 0.1 --path_smooth 1.0 \
+  --feature_fraction 0.8 --bagging_fraction 0.8 --truncation_level 30
+```
+
+The dump is ~24.5 GB. The trainer drops the 2,215 groups (8.2%) whose gold
+track the pool missed, leaving 24,951 training groups.
+
+### Blind B inference (the submitted track lists)
+
+```bash
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+python scripts/inference/run_inference_fusion_recall_expansion.py \
+  --tid blind_b_v8d_s3cap_v1 \
+  --dataset talkpl-ai/TalkPlayData-Challenge-Blind-B \
+  --blind_mode --out_dir exp/inference/blind_b \
+  --topk 20 \
+  --tt_model models/twotower_v8d/final --tt_index cache/twotower_v8d \
+  --anchor_v8d \
+  --tt_pool 2000 --artist_expansion --last_nn_k 100 --last_nn_src 2 \
+  --bm25_missing_floor 0.05 \
+  --qwen_pool 500 --cf_pool 200 --session_mean_k 100 \
+  --cooccur_table cache/cooccur/next_song_leakfree_6k_excluded.npz \
+  --cooccur_ks 300,150,50 \
+  --infer_progress_labels --goal_substitute_positive \
+  --semantic_ids_dir cache/semantic_ids/runC2_attributes_L2C64 \
+  --sasrec_ckpt models/sasrec/sasrec_runC2_L2C64/best_model.pth \
+  --sasrec_top_k_l0 3 --sasrec_max_cands 300 \
+  --ltr_model models/ltr/ltr_v8d_s3cap_nl31_lr0p08.txt
+```
+
+To run on a different Blind B-format dataset, change only `--dataset` (and
+`--tid`/`--out_dir`). Blind B has no `goal_progress_assessment` labels, so
+`--infer_progress_labels` derives liked/rejected reactions from the user's
+follow-up text; `--goal_substitute_positive` swaps the goal slot for the most
+recent accepted track.
+
+### Responses and packaging
+
+Track retrieval and response generation are decoupled. The submitted v2
+responses were hand-written (pivot-aware, per session) against the track lists
+above; there is no response-generation script. Packaging is manual:
+
+1. Merge responses into the prediction file (one
+   `{session_id, user_id, turn_number, predicted_track_ids[20], predicted_response}`
+   record per session) -> `prediction.json`.
+2. `zip submission.zip prediction.json`.
+
+The submitted artifact is at
+`exp/inference/blind_b/submissions/v2_v8d_s3cap_pivotresp/`.
+
+### Local evaluation (dev set)
+
+```bash
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+python scripts/inference/run_inference_fusion_recall_expansion.py \
+  --tid v8d_s3cap_dev1000 \
+  --tt_model models/twotower_v8d/final --tt_index cache/twotower_v8d \
+  --anchor_v8d \
+  --tt_pool 2000 --artist_expansion --last_nn_k 100 --last_nn_src 2 \
+  --bm25_missing_floor 0.05 \
+  --qwen_pool 500 --cf_pool 200 --session_mean_k 100 \
+  --cooccur_table cache/cooccur/next_song_leakfree_6k_excluded.npz \
+  --cooccur_ks 300,150,50 \
+  --use_goal_progress --goal_substitute_positive --rejection_drop_threshold 2 \
+  --semantic_ids_dir cache/semantic_ids/runC2_attributes_L2C64 \
+  --sasrec_ckpt models/sasrec/sasrec_runC2_L2C64/best_model.pth \
+  --sasrec_top_k_l0 3 --sasrec_max_cands 300 \
+  --ltr_model models/ltr/ltr_v8d_s3cap_nl31_lr0p08.txt
+
+python scripts/inference/evaluate_local.py \
+  --pred exp/inference/devset/v8d_s3cap_dev1000.json
+```
+
+`scripts/inference/guard_check_ltr.py` sanity-checks a booster against the
+inference feature order before use.
+
+### Without the external semantic-ids-llm clone
+
+The exact submitted configuration requires the Stage 2 clone. A close variant
+without it drops `--sasrec_ckpt --sasrec_top_k_l0 --sasrec_max_cands` and uses
+the 60-feature tier1 booster (`models/ltr/ltr_v8d_tier1_nl31_lr0p08.txt`,
+trained from the same dump command minus the two `--sasrec_*` flags). This is
+the "v5-cand" config in `wiki/BLIND_B.md`: it scored at parity on blind-sim
+(0.1894 golden-200 vs 0.1864) but is NOT what was submitted.
+
+---
+
 ## Table of Contents
 
 1. [Task Overview](#task-overview)

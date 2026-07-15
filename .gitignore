@@ -12,3 +12,6 @@ adapters/
 music-crs-baselines/
 models/
 music-crs-evaluator/
+third_party/
+logs/
+__pycache__/

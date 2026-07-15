@@ -306,13 +306,18 @@ track. All builders now index `turn_number - 1`.
 the logged system played and the user rejected. Training them as positives
 teaches the ranker to rank rejected tracks highly. Fix: `--skip_no_progress`
 drops these turns from LTR training entirely (a rejected gold is not a negative
-for the *retrieval* problem — it is an unusable group). For the two-tower,
-`--drop_rejected` removes those turns from positive pairs and recycles the
-rejected tracks as **session-level hard negatives** — same intent context,
-explicitly refused. Hard-negative priority order per anchor: confirmed session
+for the *retrieval* problem — it is an unusable group). The two-tower builder
+(`build_twotower_v8d_data.py`) recycles every rejected track as a
+**session-level hard negative** for later turns — same intent context,
+explicitly refused. (Note: the v8d builder still emits rejected-gold turns as
+positive pairs; it writes a `weight: 0.3` field, but `train_twotower_lora.py`
+does not consume weights, so those positives trained at full weight. The
+rejection signal enters the retriever only through the hard negatives.)
+Hard-negative priority order per anchor: confirmed session
 rejections (up to 2) > BM25 top hard negs (up to 2, only for specific-goal
 sessions) > artist-repeat distractors (1) > in-batch negatives. A "MOVES
 protection" rule forbids ever sampling a user-accepted track as a negative.
+Training consumed the first two negative slots (`--n_hard_negs 2`).
 
 **(c) Co-occurrence leakage.** The next-track co-occurrence table was initially
 built on sessions overlapping the LTR feature dump. Gold tracks had
@@ -392,10 +397,14 @@ of text.
 
 **Training data construction** is the pipeline run in dump mode: the full
 9-source retrieval executes on 6,000 held-out training sessions and writes one
-row per (turn, candidate) — 24,718 groups, 77.7M rows, 18 GB NPZ, positive rate
-0.00035. LambdaMART is the only ranker family we found that thrives on this
-shape: it computes pairwise gradients within each group (one positive vs ~3,100
-negatives), so extreme imbalance is handled natively, no sampling tricks.
+row per (turn, candidate). The shipped 67-feature s3cap dump
+(`ltr_v8d_tier1_semC2_stage3cap_6k_features.npz`, 24.5 GB): 89,654,693 rows,
+27,166 groups; 2,215 groups (8.2%) where the pool missed the gold are all-zero
+and dropped by the trainer, leaving 24,951 training groups. (The earlier
+tier1/no-bucket dump was 24,718 groups, 77.7M rows, 18 GB.) LambdaMART is the
+only ranker family we found that thrives on this shape: it computes pairwise
+gradients within each group (one positive vs ~3,300 negatives), so extreme
+imbalance is handled natively, no sampling tricks.
 
 **Session-level discipline everywhere:** the 6,000 dump sessions are excluded
 from two-tower training; the co-occurrence table excludes the dump sessions;
@@ -406,12 +415,11 @@ model selection is never trained on.
 
 - Base: `intfloat/multilingual-e5-base` (279M). LoRA r=32, alpha=64, dropout
   0.05, on q/k/v. 1.8M trainable params.
-- Data: ~74K anchor/positive pairs from 15,199 train sessions (minus the 6K LTR
-  dump sessions), v8d role-tagged anchors, gpa-corrected positive weighting
-  (rejected-turn positives dropped with p=0.7), hard negatives as in Section
-  3.7.
-- Loss: MultipleNegativesRankingLoss (InfoNCE with in-batch negatives) plus 2-3
-  explicit hard negatives per row.
+- Data: 46,364 train + 7,352 valid anchor/positive pairs from the 15,199-session
+  train split minus the 6K LTR dump sessions (9,199 sessions), v8d role-tagged
+  anchors, hard negatives as in Section 5(b).
+- Loss: MultipleNegativesRankingLoss (InfoNCE with in-batch negatives) plus 2
+  explicit hard negatives per row (`--n_hard_negs 2`).
 - Schedule: 3 epochs, batch 8 x grad-accum 4 (effective 32), lr 1e-4, warmup
   200, gradient checkpointing.
 - Output: a PEFT LoRA adapter served on top of the base `multilingual-e5-base`.
@@ -617,9 +625,9 @@ eight-source lean config (Section 10.6), which can drop it entirely.
 | Full dev eval (1,000 sessions, 8,000 turns) | ~35-40 min | ~0.26 s/turn amortized |
 | Blind submission inference (80 sessions) | ~3 min | |
 | LTR feature dump (6,000 sessions, the LTR training data) | ~3-4 h | one-off per feature-set change |
-| Two-tower LoRA fine-tune (74K pairs, 3 epochs) | ~10 h | ~16 s/step, effective batch 64, one-off |
+| Two-tower LoRA fine-tune (46K pairs, 3 epochs) | ~10 h | ~16 s/step, effective batch 32, one-off |
 | TT index build (47,071 tracks) | tens of minutes | one-off per model |
-| LightGBM training (77.7M rows x 67 feat, 5-fold CV) | ~1-2 h | one-off |
+| LightGBM training (89.7M rows x 67 feat, 5-fold CV) | ~1-2 h | one-off |
 
 The iteration loop that actually mattered — change a feature, re-dump if pool
 composition changed, retrain LTR, golden-200 check, full-dev gate — turns

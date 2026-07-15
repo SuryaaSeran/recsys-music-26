@@ -172,9 +172,12 @@ passage: {track_name} by {artist_name} | Album: {album_name} | Tags: {tag1} {tag
 - Loss: MultipleNegativesRankingLoss (InfoNCE, in-batch negatives)
 - Epochs: 3 | Batch size: 8 per device | Grad accumulation: 4 (effective batch 32)
 - LR: 1e-4 | Warmup steps: 200 | Gradient checkpointing: enabled
-- Data: TalkPlayData-Challenge-Dataset `train` split, 15,199 sessions
+- Data: TalkPlayData-Challenge-Dataset `train` split (15,199 sessions) minus
+  the 6,000 LTR dump sessions (exclude_seed 42) = 9,199 sessions,
+  46,364 train + 7,352 valid pairs
 - Train/val split: 95/5 at session level
-- Output: `models/twotower_v8d/final` (LoRA merged into base weights)
+- Output: `models/twotower_v8d/final` (unmerged PEFT LoRA adapter + tokenizer,
+  24.2 MB; base encoder loads from the HF cache at runtime)
 - Index: `cache/twotower_v8d/` (47,071 tracks × 768-dim, L2-normalised)
 
 ---
@@ -203,7 +206,7 @@ Feature dump: `exp/analysis/ltr_v8d_tier1_6k_features.npz` (18GB)
 ```bash
 python scripts/train/build_twotower_v8d_data.py \
   --out_dir data/twotower_v8d \
-  --sessions 15000 --shuffle_seed 42
+  --exclude_n 6000 --exclude_seed 42 --hard_negs 5
 ```
 
 ### Train TT-v8d
@@ -249,6 +252,41 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
 python scripts/train/train_ltr_lightgbm.py \
   --features exp/analysis/ltr_v8d_tier1_6k_features.npz \
   --out models/ltr/ltr_v8d_tier1_nl31_lr0p08.txt \
+  --n_folds 5 --num_leaves 31 --lr 0.08 --num_iter 1000 --early_stop 75 \
+  --lambda_l2 0.1 --min_sum_hessian 0.1 --path_smooth 1.0 \
+  --feature_fraction 0.8 --bagging_fraction 0.8 --truncation_level 30
+```
+
+### Feature dump + train, 67-feature s3cap LTR (the Blind B v2 model)
+
+The shipped Blind B model `models/ltr/ltr_v8d_s3cap_nl31_lr0p08.txt` (67
+features, CV nDCG@20 0.3144; dump: 89,654,693 rows, 27,166 groups, 24,951 with
+a positive after the all-zero-group filter) is the tier1 dump command plus the
+Stage 3 SASRec bucket source. Reconstructed command (the original invocation
+was not logged; flags match `ltr_v8d_tier1_semC2_stage3cap_6k_features.npz`
+and the model's meta.json):
+
+```bash
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+python scripts/inference/run_inference_fusion_recall_expansion.py \
+  --split train --sessions 6000 --shuffle_seed 42 \
+  --tt_model models/twotower_v8d/final --tt_index cache/twotower_v8d \
+  --anchor_v8d \
+  --tt_pool 2000 --artist_expansion --last_nn_k 100 --last_nn_src 2 \
+  --bm25_missing_floor 0.05 \
+  --qwen_pool 500 --cf_pool 200 --session_mean_k 100 \
+  --cooccur_table cache/cooccur/next_song_leakfree_6k_excluded.npz \
+  --cooccur_ks 300,150,50 \
+  --skip_no_progress --use_goal_progress \
+  --semantic_ids_dir cache/semantic_ids/runC2_attributes_L2C64 \
+  --sasrec_ckpt models/sasrec/sasrec_runC2_L2C64/best_model.pth \
+  --sasrec_top_k_l0 3 --sasrec_max_cands 300 \
+  --write_features exp/analysis/ltr_v8d_tier1_semC2_stage3cap_6k_features.npz
+
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+python scripts/train/train_ltr_lightgbm.py \
+  --features exp/analysis/ltr_v8d_tier1_semC2_stage3cap_6k_features.npz \
+  --out models/ltr/ltr_v8d_s3cap_nl31_lr0p08.txt \
   --n_folds 5 --num_leaves 31 --lr 0.08 --num_iter 1000 --early_stop 75 \
   --lambda_l2 0.1 --min_sum_hessian 0.1 --path_smooth 1.0 \
   --feature_fraction 0.8 --bagging_fraction 0.8 --truncation_level 30

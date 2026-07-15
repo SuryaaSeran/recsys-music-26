@@ -49,7 +49,7 @@ per-turn goal-progress assessments, and the model's internal thoughts are remove
 and half of its 80 sessions are cold-start with no user profile.
 
 Our system has three stages. *Recall* runs nine retrievers per turn and merges
-their outputs into one deduplicated pool (mean ~3,100 candidates); no single
+their outputs into one deduplicated pool (mean ~3,300 candidates); no single
 source exceeds ~59% gold recall at 500 candidates, but the fused pool reaches
 ~89% on the blind-simulated holdout. *Rescore* is a LightGBM LambdaMART model that
 scores every candidate from 67 features and emits the top 20, replacing hand-tuned
@@ -90,9 +90,10 @@ sources help, because source membership feeds the agreement feature of Section 4
 
 *Lexical (source 1).* BM25 (via `bm25s`) indexes each track's name, artist, album,
 and tag list; indexing the tags matters because conversational requests use
-genre/mood/era vocabulary that only tags carry. The query is the latest user
-message plus the goal, culture, last four played tracks, and last four turns;
-older turns are excluded because they dilute the current request's IDF mass.
+genre/mood/era vocabulary that only tags carry. The query concatenates the goal,
+culture, the last four played tracks, and the last four dialogue turns (the
+current request among them); older turns are excluded because they dilute the
+current request's IDF mass.
 
 *Dense (sources 2, 5).* Two independent dense retrievers give complementary
 spaces. Source 2 is our fine-tuned two-tower encoder (Section 3): the dialogue
@@ -105,8 +106,8 @@ features.
 
 *Neighborhood (sources 3, 7).* Query-side retrieval is complemented by expansion
 around the history: the nearest neighbors of the last two played tracks (source 3)
-and of the mean two-tower embedding of the session's history, the taste centroid
-(source 7). Both are cheap matmuls against the same matrix; rejected history tracks
+and of the mean two-tower embedding of the last four history tracks, a recent
+taste centroid (source 7). Both are cheap matmuls against the same matrix; rejected history tracks
 are filtered from these seeds first (Section 3.3).
 
 *Catalog structure (sources 4, 8, 9).* Artist expansion (source 4) is a
@@ -119,8 +120,8 @@ an RQ-VAE assigns each track a semantic ID and a small SASRec predicts the next
 bucket, but next-bucket prediction has a low ceiling (hit@3 = 42.1%), so an
 eight-source configuration without it reaches parity.
 
-*Collaborative (source 6).* A BPR matrix-factorization model adds each warm user's
-top-200 tracks; cold sessions simply receive nothing from this source and the
+*Collaborative (source 6).* The competition-provided BPR matrix-factorization
+embeddings add each warm user's top-200 tracks; cold sessions simply receive nothing from this source and the
 pipeline degrades gracefully.
 
 ## 3 Dialogue-Aware Retriever
@@ -155,9 +156,10 @@ inference.
 ### 3.2 Training and serving
 
 We train with MultipleNegativesRankingLoss (InfoNCE with in-batch negatives) plus
-two to three explicit hard negatives per row (Section 3.3): 3 epochs, effective
-batch 32, learning rate 1e-4. Training uses ~74K anchor/positive pairs, excluding
-the 6,000 sessions reserved for the ranker's feature dump. At serving time we ship
+two explicit hard negatives per row (Section 3.3): 3 epochs, effective
+batch 32, learning rate 1e-4. Training uses ~46K anchor/positive pairs (plus a
+7K-pair validation split), excluding the 6,000 sessions reserved for the ranker's
+feature dump. At serving time we ship
 a 7 MB LoRA adapter applied to the cached base encoder, and query a one-pass
 47,071 x 768 track index by brute-force matmul.
 
@@ -175,15 +177,15 @@ next. A naive reading attaches each reaction to the wrong track, so we shift eve
 GPA back one turn (`turn_number - 1`). This alignment is a prerequisite for
 everything below.
 
-**Second, stop treating rejected tracks as positives.** After alignment, 43.2% of
-turns carry a gold track the user *rejected* (`DOES_NOT_MOVE_TOWARD_GOAL`).
-Training these as positives teaches both models to rank rejected tracks highly. We
-use them differently: the ranker *drops* such turns (a rejected track is not a
-valid positive), while the retriever keeps the rejected track as a *hard negative*
-for that session, exactly the near-miss the encoder should learn to push away. We
-prioritize confirmed session rejections, then BM25 near-misses, then same-artist
-distractors, then in-batch negatives, and never sample an accepted track as a
-negative.
+**Second, stop rewarding rejected tracks.** After alignment, 43.2% of turns
+carry a gold track the user *rejected* (`DOES_NOT_MOVE_TOWARD_GOAL`). Training
+these as ordinary positives teaches the models to rank rejected tracks highly.
+The ranker *drops* such turns entirely (a rejected track is not a valid
+positive). The retriever additionally recycles every rejected track as a *hard
+negative* for the rest of that session, exactly the near-miss the encoder
+should learn to push away: negatives are drawn in priority order from confirmed
+session rejections, then BM25 near-misses, then same-artist distractors, then
+in-batch negatives, and an accepted track is never sampled as a negative.
 
 **Third, act on the feedback at inference.** The aligned GPA drives three
 behaviors: the history-based retrievers (sources 3, 7 and the BM25 query) are
@@ -207,11 +209,12 @@ The rescorer is a LightGBM LambdaMART model (nDCG@20 objective) that scores ever
 pooled candidate and returns the top 20. It replaces hand-tuned linear fusion and
 is the pivotal choice: it *decouples recall from precision*, absorbs heterogeneous
 features (cosines, ranks, count tables, metadata, session counters), and handles
-extreme imbalance natively (one positive per ~3,100 candidates) via pairwise
+extreme imbalance natively (one positive per ~3,300 candidates) via pairwise
 gradients within each turn's group. Training runs the full retrieval in dump mode
-on 6,000 held-out sessions, yielding 24,718 groups and 77.7M rows (positive rate
-0.00035); the model has 67 features (5-fold session CV nDCG@20 = 0.3144) and is a
-0.6 MB file. The features fall into six groups (Table 2). Group B dominates:
+on 6,000 held-out sessions, yielding 27,166 groups and 89.7M rows; the 8.2% of
+groups whose gold track the pool missed carry no positive and are dropped,
+leaving 24,951 training groups. The model has 67 features (5-fold session CV
+nDCG@20 = 0.3144) and is a 0.6 MB file. The features fall into six groups (Table 2). Group B dominates:
 multi-source agreement accounts for roughly 57% of total model gain and is the
 feature that transfers best when goal and GPA are withheld on the blind set.
 
@@ -262,8 +265,8 @@ matrix is a single matmul, so no approximate index is needed at this catalog
 scale, and every stage except the encoder passes is single-digit milliseconds.
 Measured end-to-end over the 200-session evaluation set, the full recall-plus-
 rescore pipeline runs at **2.17 s per session, about 0.27 s per turn** (Table 4,
-bottom). Of this, the rescore stage is negligible: scoring the ~3,100-candidate
-pool with LambdaMART takes 3.4 ms, roughly 1% of turn latency, so recall (the nine
+bottom). Of this, the rescore stage is negligible: scoring the ~3,300-candidate
+pool with LambdaMART takes ~3.4 ms, roughly 1% of turn latency, so recall (the nine
 sources and their two query-encoder passes) accounts for essentially all of it.
 Even with every neural block pinned to the CPU (Table 4, top), a full turn stays
 under one second; dropping the frozen Qwen3-0.6B encoder in the eight-source
