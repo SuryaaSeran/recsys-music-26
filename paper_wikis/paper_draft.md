@@ -15,11 +15,11 @@ inexpensive sources whose candidates are arbitrated by a gradient-boosted
 learning-to-rank model over 67 features; the strongest feature is simply how many
 sources agree on a candidate. The only trained neural component is a LoRA
 adaptation of a 279M-parameter multilingual encoder over a role-tagged dialogue
-anchor. Our central finding is that the dataset's goal-progress feedback signal is
-both misaligned in time and contaminated with user-rejected tracks, that fixing it
-is the highest-value step in the project, and that the same signal can be
-reconstructed from raw dialogue when it is withheld at test time. The system
-reaches a composite score of 0.49 on the blind generalization set.
+anchor that encodes prior turns, recommendations, and per-turn user reactions. We
+further identify and correct a timing misalignment and rejected-track
+contamination in the dataset's goal-progress feedback signal, and show the same
+signal can be reconstructed from raw dialogue when it is withheld at test time.
+The system reaches a composite score of 0.49 on the blind generalization set.
 
 ## CCS CONCEPTS
 
@@ -296,11 +296,10 @@ rescore over the 200-session set, encoders on the Metal backend.**
 
 A conversational music recommender need not use a GPU cluster or a per-candidate
 neural reranker to be competitive. Fusing many inexpensive retrievers, letting a
-gradient-boosted ranker arbitrate them, and adding a single LoRA-adapted dialogue
-encoder reaches composite 0.49 on the blind set while training and serving on one
-desktop. The largest gains came from data hygiene rather than model capacity, and
-in particular from correctly handling a goal-progress feedback signal that is
-off-by-one in time, contaminated with rejected tracks, and absent at test time.
+gradient-boosted ranker arbitrate them, adding a single LoRA-adapted dialogue
+encoder, and correctly handling a goal-progress feedback signal that is off-by-one
+in time, contaminated with rejected tracks, and absent at test time together reach
+composite 0.49 on the blind set while training and serving on one desktop.
 
 ## ACKNOWLEDGMENTS
 

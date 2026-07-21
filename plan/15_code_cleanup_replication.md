@@ -97,9 +97,20 @@ Done:
 - Both scripts/*/WALKTHROUGH.md describe the archived v3/v13 fusion era ->
   move to archive with their scripts; README is the live replication doc.
 
-Pending (blocked on intermittent classifier outage for mutating Bash):
-- git mv batches to scripts/archive/v5_pre_submission/{inference,train,analysis}
-  (+ kaggle/, build/, both WALKTHROUGH.md, build_bm25_v2.py).
-- cp wiki/PAPER_SYSTEM_ACCOUNT.md -> paper_wikis/PAPER_SYSTEM_ACCOUNT.md.
-- Regenerate paper_wikis/paper.docx (scripts/analysis/build_paper_docx.py).
-- Sanity: entry script --help after moves; git status clean; commit + push.
+- git mv batches complete: 65 files into scripts/archive/v5_pre_submission/
+  {inference,train,analysis,kaggle,build}. Remaining dirs match the KEEP list
+  exactly.
+- cp wiki/PAPER_SYSTEM_ACCOUNT.md -> paper_wikis/PAPER_SYSTEM_ACCOUNT.md: done.
+- paper_wikis/paper.docx regenerated from edited paper_draft.md: done.
+- Sanity: `run_inference_fusion_recall_expansion.py --help` runs clean after
+  moves (exit 0). git status clean except unrelated .claude/scheduled_tasks.lock.
+- Committed to main: b5f8d99. NOT pushed (user has not requested push).
+- D1 confirmed by user (2026-07-14): README's primary replication path keeps
+  the third_party/semantic-ids-llm clone as a hard prerequisite (it is what
+  actually produced the 0.49 score); the no-clone tier1 variant stays a
+  documented fallback, not the primary path. No further code/doc change needed.
+
+## CLOSED (2026-07-14)
+
+Plan complete. Main reflects the 0.49 Blind B v2 system exactly. See
+`session_state_2026_07_14.md` in memory for a compact record.
