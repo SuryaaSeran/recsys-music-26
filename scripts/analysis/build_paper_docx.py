@@ -3,9 +3,11 @@
 Loads the interim ACM template (for its named styles + page setup), clears the
 sample body, and rebuilds the paper using acmart styles (Title_document, AbsHead,
 Abstract, CCSHead, KeyWordHead, Head1/2/3, Para, AckHead, ReferenceHead,
-Bib_entry, TableCaption, Table Grid). Single-column draft mode, matching the
-template; the ACM macros produce the final two-column layout.
+Bib_entry, TableCaption, Table Grid). The template's body section is two-column
+(~3.33in per column); wide data tables are wrapped in continuous section breaks
+so they span the full page width instead of overflowing a single column.
 """
+import copy
 import re
 from pathlib import Path
 
@@ -22,6 +24,7 @@ SRC = ROOT / "paper_wikis/paper_draft.md"
 OUT = ROOT / "paper_wikis/paper.docx"
 
 USABLE_WIDTH_IN = 7.0  # page width 8.5in - 0.75in margins each side
+COL_GUTTER_TWIPS = 480
 
 ALIGN = {"l": WD_ALIGN_PARAGRAPH.LEFT, "c": WD_ALIGN_PARAGRAPH.CENTER, "r": WD_ALIGN_PARAGRAPH.RIGHT}
 
@@ -98,6 +101,35 @@ def set_cell_margins(tbl, top=40, bottom=40, left=100, right=100):
         node.set(qn("w:type"), "dxa")
         mar.append(node)
     tblPr.append(mar)
+
+
+def insert_section_break(doc, cols):
+    """End the current section here with the given column count (continuous
+    break) so content before/after this point can use a different column
+    count than content that follows. Copies page size/margins from the
+    document's trailing sectPr so page geometry stays consistent."""
+    body_sectPr = doc.sections[-1]._sectPr
+    p = doc.add_paragraph()
+    pPr = p._p.get_or_add_pPr()
+    sectPr = OxmlElement("w:sectPr")
+
+    typ = OxmlElement("w:type")
+    typ.set(qn("w:val"), "continuous")
+    sectPr.append(typ)
+
+    for tag in ("w:pgSz", "w:pgMar"):
+        el = body_sectPr.find(qn(tag))
+        if el is not None:
+            sectPr.append(copy.deepcopy(el))
+
+    colsEl = OxmlElement("w:cols")
+    colsEl.set(qn("w:num"), str(cols))
+    if cols > 1:
+        colsEl.set(qn("w:space"), str(COL_GUTTER_TWIPS))
+    sectPr.append(colsEl)
+
+    pPr.append(sectPr)
+    return p
 
 
 def has_style(doc, name):
@@ -239,10 +271,11 @@ def main():
         if stripped == "---":
             flush_para(); i += 1; continue
 
-        # table caption: **Table N: ...**  -> TableCaption, placed before its table
-        cm = re.match(r"^\*\*(Table \d+:.*)\*\*$", stripped)
+        # table caption: **Table N: ...**  -> remembered, added inside the
+        # table's own full-width section (see table block below)
+        cm = re.match(r"^\*\*(Table \d+[a-z]?:.*)\*\*$", stripped)
         if cm:
-            flush_para(); add("tcap", cm.group(1)); last_caption = cm.group(1); i += 1; continue
+            flush_para(); last_caption = cm.group(1); i += 1; continue
 
         # fenced code block
         if stripped.startswith("```"):
@@ -264,8 +297,12 @@ def main():
                 if not re.match(r"^[\s:|-]+$", "".join(cells)):
                     rows.append(cells)
                 i += 1
+            insert_section_break(doc, cols=1)
+            if last_caption:
+                add("tcap", last_caption)
             add_table(rows, caption=last_caption)
             last_caption = None
+            insert_section_break(doc, cols=2)
             continue
 
         # headings
