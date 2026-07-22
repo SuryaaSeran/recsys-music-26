@@ -168,7 +168,7 @@ sources help, because source membership feeds the agreement feature of Section~4
 \begin{table}
   \caption{The nine recall sources.}
   \label{tab:sources}
-  \begin{tabular}{clll}
+  \begin{tabular}{p{0.04\linewidth}p{0.20\linewidth}p{0.16\linewidth}p{0.48\linewidth}}
     \toprule
     \# & Source & Budget & Signal \\
     \midrule
@@ -344,7 +344,7 @@ system scores nDCG@20 = 0.3997 (Blind A) and composite 0.49 (Blind B).
 \begin{table}
   \caption{Development nDCG@20 after each load-bearing change.}
   \label{tab:results}
-  \begin{tabular}{lr}
+  \begin{tabular}{p{0.72\linewidth}p{0.16\linewidth}}
     \toprule
     Change & nDCG@20 \\
     \midrule
@@ -508,7 +508,7 @@ train/evaluate/iterate loop, including the one LoRA fine-tune, runs on a single
   forced to CPU (worst case), median over 20 runs. Bottom: end-to-end recall +
   rescore over the 200-session set, encoders on the Metal backend.}
   \label{tab:latency}
-  \begin{tabular}{lr}
+  \begin{tabular}{p{0.68\linewidth}p{0.20\linewidth}}
     \toprule
     Operation & Cost \\
     \midrule
