@@ -236,6 +236,7 @@ def main():
     section = "front"  # front|abstract|ccs|kw|body|ack|ref
     para_buf = []
     last_caption = None
+    entered_body = False
 
     def flush_para():
         nonlocal para_buf
@@ -307,12 +308,17 @@ def main():
                 if not re.match(r"^[\s:|-]+$", "".join(cells)):
                     rows.append(cells)
                 i += 1
-            insert_section_break(doc, cols=1)
+            # A sectPr inside a paragraph ends the section *containing* that
+            # paragraph. So the break placed before the table must carry the
+            # column count of the body text that precedes it (2), and the
+            # break placed after the table carries the table's own count (1,
+            # full page width). This is the inverse of what looks intuitive.
+            insert_section_break(doc, cols=2)   # close preceding 2-col body
             if last_caption:
                 add("tcap", last_caption)
             add_table(rows, caption=last_caption)
             last_caption = None
-            insert_section_break(doc, cols=2)
+            insert_section_break(doc, cols=1)   # close table's full-width section
             continue
 
         # headings
@@ -324,6 +330,11 @@ def main():
                 add("title", htext); seen_title = True
                 section = "front"
             elif htext.upper() == "ABSTRACT":
+                # close the full-width title/author front matter as a 1-col
+                # section; everything from here on flows in the 2-col body
+                if not entered_body:
+                    insert_section_break(doc, cols=1)
+                    entered_body = True
                 add("abshead", "ABSTRACT"); section = "abstract"
             elif htext.upper().startswith("CCS"):
                 add("ccshead", "CCS CONCEPTS"); section = "ccs"
