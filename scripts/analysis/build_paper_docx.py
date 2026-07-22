@@ -10,12 +10,94 @@ import re
 from pathlib import Path
 
 from docx import Document
-from docx.shared import Pt
+from docx.shared import Pt, Inches
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.table import WD_TABLE_ALIGNMENT
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = Path.home() / ".claude/uploads/95ce8712-e6ed-46cb-814b-7ef94e493b61/56402faa-interimlayout.docx"
 SRC = ROOT / "paper_wikis/paper_draft.md"
 OUT = ROOT / "paper_wikis/paper.docx"
+
+USABLE_WIDTH_IN = 7.0  # page width 8.5in - 0.75in margins each side
+
+ALIGN = {"l": WD_ALIGN_PARAGRAPH.LEFT, "c": WD_ALIGN_PARAGRAPH.CENTER, "r": WD_ALIGN_PARAGRAPH.RIGHT}
+
+# per-table column widths (inches, sum to USABLE_WIDTH_IN) and per-column alignment,
+# keyed by a lowercase substring of the table caption
+TABLE_SPECS = {
+    "nine recall sources": {"widths": [0.5, 1.6, 1.3, 3.6], "align": ["c", "l", "c", "l"]},
+    "rescorer feature groups": {"widths": [1.5, 5.5], "align": ["l", "l"]},
+    "development ndcg@20 after each load-bearing change": {"widths": [5.4, 1.6], "align": ["l", "r"]},
+    "reranking attempts": {"widths": [2.0, 2.8, 2.2], "align": ["l", "l", "l"]},
+    "dev ndcg@20 by goal category": {"widths": [0.6, 4.9, 1.5], "align": ["c", "l", "r"]},
+    "measured latency and footprint": {"widths": [5.0, 2.0], "align": ["l", "r"]},
+}
+
+
+def table_spec(caption, ncols):
+    cap = (caption or "").lower()
+    for key, spec in TABLE_SPECS.items():
+        if key in cap and len(spec["widths"]) == ncols:
+            return spec
+    even = USABLE_WIDTH_IN / ncols
+    return {"widths": [even] * ncols, "align": ["l"] * ncols}
+
+
+def set_table_grid(tbl, widths_in):
+    """Set the table-level column grid (outside tcPr, no ordering constraints)."""
+    tblPr = tbl._tbl.tblPr
+    layout = OxmlElement("w:tblLayout")
+    layout.set(qn("w:type"), "fixed")
+    tblPr.append(layout)
+    grid = tbl._tbl.find(qn("w:tblGrid"))
+    if grid is not None:
+        for gc, w in zip(grid.findall(qn("w:gridCol")), widths_in):
+            gc.set(qn("w:w"), str(int(w * 1440)))
+    tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
+
+
+def set_cell_border(cell, **edges):
+    """edges: top/bottom -> dict(sz=eighths-of-a-point, val='single', color='hex')."""
+    tcPr = cell._tc.get_or_add_tcPr()
+    borders = OxmlElement("w:tcBorders")
+    for edge, spec in edges.items():
+        el = OxmlElement(f"w:{edge}")
+        el.set(qn("w:val"), spec.get("val", "single"))
+        el.set(qn("w:sz"), str(spec.get("sz", 4)))
+        el.set(qn("w:space"), "0")
+        el.set(qn("w:color"), spec.get("color", "000000"))
+        borders.append(el)
+    tcPr.append(borders)
+
+
+def shade_cell(cell, hexfill):
+    tcPr = cell._tc.get_or_add_tcPr()
+    shd = OxmlElement("w:shd")
+    shd.set(qn("w:val"), "clear")
+    shd.set(qn("w:color"), "auto")
+    shd.set(qn("w:fill"), hexfill)
+    tcPr.append(shd)
+
+
+def repeat_header(row):
+    trPr = row._tr.get_or_add_trPr()
+    header = OxmlElement("w:tblHeader")
+    header.set(qn("w:val"), "true")
+    trPr.append(header)
+
+
+def set_cell_margins(tbl, top=40, bottom=40, left=100, right=100):
+    tblPr = tbl._tbl.tblPr
+    mar = OxmlElement("w:tblCellMar")
+    for edge, val in (("top", top), ("left", left), ("bottom", bottom), ("right", right)):
+        node = OxmlElement(f"w:{edge}")
+        node.set(qn("w:w"), str(val))
+        node.set(qn("w:type"), "dxa")
+        mar.append(node)
+    tblPr.append(mar)
 
 
 def has_style(doc, name):
@@ -74,30 +156,54 @@ def main():
             add_runs(p, text)
         return p
 
-    def add_table(rows):
+    def add_table(rows, caption=None):
         header, body = rows[0], rows[1:]
-        tbl = doc.add_table(rows=1, cols=len(header))
-        tbl.style = "Table Grid"
+        ncols = len(header)
+        spec = table_spec(caption, ncols)
+        widths, aligns = spec["widths"], spec["align"]
+
+        tbl = doc.add_table(rows=1, cols=ncols)
+        tbl.style = "Normal Table" if has_style(doc, "Normal Table") else "Table Grid"
+        set_cell_margins(tbl)
+
+        HEADER_RULE = {"sz": 12, "val": "single", "color": "000000"}
+        MID_RULE = {"sz": 4, "val": "single", "color": "000000"}
+
         for j, cell in enumerate(header):
             c = tbl.rows[0].cells[j]
+            c.width = Inches(widths[j])
             c.paragraphs[0].text = ""
+            c.paragraphs[0].alignment = ALIGN.get(aligns[j], WD_ALIGN_PARAGRAPH.LEFT)
             r = c.paragraphs[0].add_run(cell); r.bold = True
             r.font.size = Pt(9)
-        for row in body:
+            shade_cell(c, "E7E7E7")
+            set_cell_border(c, top=HEADER_RULE, bottom=MID_RULE)
+        repeat_header(tbl.rows[0])
+
+        for ridx, row in enumerate(body):
+            is_last = ridx == len(body) - 1
             cells = tbl.add_row().cells
             for j, cell in enumerate(row):
                 if j >= len(cells):
                     break
-                cells[j].paragraphs[0].text = ""
-                add_runs(cells[j].paragraphs[0], cell)
-                for run in cells[j].paragraphs[0].runs:
+                c = cells[j]
+                c.width = Inches(widths[j])
+                c.paragraphs[0].text = ""
+                c.paragraphs[0].alignment = ALIGN.get(aligns[j], WD_ALIGN_PARAGRAPH.LEFT)
+                add_runs(c.paragraphs[0], cell)
+                for run in c.paragraphs[0].runs:
                     run.font.size = Pt(9)
+                if is_last:
+                    set_cell_border(c, bottom=HEADER_RULE)
+
+        set_table_grid(tbl, widths)
 
     lines = SRC.read_text().splitlines()
     i = 0
     seen_title = False
     section = "front"  # front|abstract|ccs|kw|body|ack|ref
     para_buf = []
+    last_caption = None
 
     def flush_para():
         nonlocal para_buf
@@ -136,7 +242,7 @@ def main():
         # table caption: **Table N: ...**  -> TableCaption, placed before its table
         cm = re.match(r"^\*\*(Table \d+:.*)\*\*$", stripped)
         if cm:
-            flush_para(); add("tcap", cm.group(1)); i += 1; continue
+            flush_para(); add("tcap", cm.group(1)); last_caption = cm.group(1); i += 1; continue
 
         # fenced code block
         if stripped.startswith("```"):
@@ -158,7 +264,8 @@ def main():
                 if not re.match(r"^[\s:|-]+$", "".join(cells)):
                     rows.append(cells)
                 i += 1
-            add_table(rows)
+            add_table(rows, caption=last_caption)
+            last_caption = None
             continue
 
         # headings

@@ -42,7 +42,7 @@
 
 \begin{document}
 
-\title{A CPU-Scale Conversational Music Recommender: Fused Retrieval and Learned Ranking for the TalkPlayData Challenge}
+\title{Multi-Turn Preference Elicitation in Dialogue-Aware Music Recommendation: Fused Retrieval and Learned Ranking for the TalkPlayData Challenge}
 
 % ---------------- AUTHOR BLOCK (placeholders — fill in before submission) ----------------
 \author{FirstName Surname}
@@ -73,19 +73,20 @@
 \renewcommand{\shortauthors}{Surname et al.}
 
 \begin{abstract}
-We present a conversational music recommender for the TalkPlayData Challenge
-(ACM RecSys 2026) that, at each dialogue turn, ranks tracks from a 47,071-track
-catalog and generates the assistant response, and that trains and serves entirely
-on a single consumer desktop with no discrete GPU. Retrieval is a union of nine
-inexpensive sources whose candidates are arbitrated by a gradient-boosted
-learning-to-rank model over 67 features; the strongest feature is simply how many
-sources agree on a candidate. The only trained neural component is a LoRA
-adaptation of a 279M-parameter multilingual encoder over a role-tagged dialogue
-anchor that encodes prior turns, recommendations, and per-turn user reactions. We
-further identify and correct a timing misalignment and rejected-track
-contamination in the dataset's goal-progress feedback signal, and show the same
-signal can be reconstructed from raw dialogue when it is withheld at test time.
-The system reaches a composite score of 0.49 on the blind generalization set.
+We present a conversational music recommender for the TalkPlayData Challenge (ACM
+RecSys 2026) that treats each dialogue turn's user reactions as a preference-
+elicitation signal for both retrieval and ranking. The dataset's goal-progress
+feedback is delayed by one turn and includes rejected tracks logged as if they
+were positives; we align the signal in time, remove rejected-track contamination
+from training, and reconstruct it from raw dialogue when it is withheld at test
+time. This signal drives a role-tagged dialogue anchor -- encoding prior turns,
+recommendations, and per-turn reactions -- behind a LoRA fine-tune of a
+279M-parameter multilingual encoder, the system's only trained neural component.
+Retrieval around this anchor is a union of nine inexpensive sources arbitrated by
+a gradient-boosted learning-to-rank model over 67 features, with multi-source
+agreement the strongest single feature. The full pipeline trains and serves on a
+single consumer desktop with no discrete GPU, and reaches a composite score of
+0.49 on the blind generalization set.
 \end{abstract}
 
 \begin{CCSXML}
@@ -112,7 +113,7 @@ The system reaches a composite score of 0.49 on the blind generalization set.
 \ccsdesc[500]{Information systems~Learning to rank}
 \ccsdesc[300]{Computing methodologies~Language models}
 
-\keywords{conversational recommendation, music recommendation, learning to rank, dense retrieval, LoRA fine-tuning, preference elicitation, CPU-scale systems}
+\keywords{multi-turn preference elicitation, dialogue-aware recommendation, conversational recommendation, music recommendation, learning to rank, dense retrieval, LoRA fine-tuning, CPU-only inference}
 
 \maketitle
 
@@ -144,14 +145,18 @@ response may describe the ranked list but never reorders it. All three stages ru
 on one Apple M4 machine (16~GB unified memory, no GPU), and the only trained
 neural component is the LoRA encoder of Section~3.
 
-\textbf{Contributions.} (1) A recall design that treats retrieval as \emph{set union, not
-weighted fusion}: each source contributes candidates and per-source features, and
-a learned ranker decides how far to trust each; multi-source agreement is the
-single strongest feature. (2) A dialogue-aware retriever: a LoRA fine-tune of
-\texttt{multilingual-e5-base} over a role-tagged anchor encoding prior turns,
-recommendations, and per-turn reactions. (3) A treatment of the goal-progress
-feedback signal that is off-by-one in time and contaminated with rejected tracks,
-plus a test-time reconstruction of that signal from raw dialogue.
+\textbf{Contributions.} (1) A treatment of the goal-progress feedback signal that is
+off-by-one in time and contaminated with rejected tracks: we align it, decontaminate
+it, and reconstruct it from raw dialogue when it is withheld at test time. (2) A
+structured, role-tagged dialogue anchor that encodes prior turns, recommendations,
+and per-turn reactions as explicit fields, paired with a priority-ordered
+hard-negative recipe that recycles confirmed session rejections as training
+negatives. (3) A dialogue-aware retriever: a LoRA fine-tune of
+\texttt{multilingual-e5-base} over that anchor, combining (1) and (2) into a single
+trained artifact. (4) A recall design that treats retrieval as \emph{set union, not
+weighted fusion}: each source contributes candidates and per-source features, and a
+learned ranker decides how far to trust each; multi-source agreement is the single
+strongest feature.
 
 \section{Recall Architecture}
 
@@ -334,12 +339,7 @@ sessions). The two largest single jumps are non-model changes: excluding
 already-played tracks from BM25 (+0.035), and replacing linear fusion with a
 learned ranker, which unlocked every later feature. The goal-progress fixes of
 Section~3.3 account for the final step to 0.1864. On the blind sets the same
-system scores nDCG@20 = 0.3997 (Blind A) and composite 0.49 (Blind B). Two
-negative results shaped the design: post-hoc editing of the ranker's top-20 to
-``clean up obvious mistakes'' regressed nDCG in every trial, because logged
-next-tracks often lie inside the same artist cluster a curator would prune; and
-zero-shot cross-encoder and LLM rerankers underperformed the feature-based
-LambdaMART while costing orders of magnitude more compute.
+system scores nDCG@20 = 0.3997 (Blind A) and composite 0.49 (Blind B).
 
 \begin{table}
   \caption{Development nDCG@20 after each load-bearing change.}
@@ -360,6 +360,130 @@ LambdaMART while costing orders of magnitude more compute.
     \bottomrule
   \end{tabular}
 \end{table}
+
+\subsection{What We Tried and Why It Didn't Work}
+
+Several directions that looked promising on paper were dropped after
+measurement. We report them because the reasons they failed are more
+informative than the numbers in Table~\ref{tab:results} alone.
+
+\textbf{Reranking on top of LambdaMART.} Every attempt to re-rank the
+LambdaMART output with a second, more ``semantic'' model underperformed the
+LambdaMART-only baseline (Table~\ref{tab:rerank-fail}). A pre-trained
+cross-encoder with no TalkPlay fine-tuning underperformed outright. A
+fine-tuned cross-encoder (bge-reranker-v2-m3, pool-aware negatives) regressed
+to dev nDCG@20 = 0.1228, a large drop -- but the cause was not the reranking
+idea itself, it was trained on a stale \texttt{[TURN-N]} anchor format that no
+longer matched the shipped anchor once the encoder moved to the v8d format, a
+data mismatch rather than a modeling failure. A local Gemma-3-12b model doing
+conservative top-25-to-20 pruning regressed slightly (0.0812 vs. 0.0818
+baseline on a 50-session pilot). The clearest case was a zero-shot Qwen3-8B
+reranker applied to the Blind A submission: nDCG@20 fell from 0.3990 to
+0.3310, lexical diversity collapsed from 0.5909 to 0.0125, the judge score
+fell from 1.90 to 1.15, and composite fell from 0.3291 to 0.1811. The
+intuition that unifies all four cases: none of these rerankers had access to
+the structural signal LambdaMART uses instead -- explicit multi-source
+agreement and GPA-derived session-state features (Table~\ref{tab:features},
+groups B and D) -- so an unfine-tuned or mismatched model instead gravitates
+toward generically ``safe'' or near-identical tracks across sessions, a
+failure mode invisible to nDCG@20 alone but catastrophic for lexical
+diversity and judge quality. The retained system (LambdaMART only, no added
+reranker) is the positive case here: its composite score beats every
+reranked variant we tried.
+
+\begin{table}
+  \caption{Reranking attempts on top of the LambdaMART baseline.}
+  \label{tab:rerank-fail}
+  \begin{tabular}{p{0.28\linewidth}p{0.32\linewidth}p{0.28\linewidth}}
+    \toprule
+    Attempt & Result & Verdict \\
+    \midrule
+    Pre-trained cross-encoder (no fine-tune) & underperformed the LambdaMART baseline & no domain adaptation to TalkPlay dialogue/track text \\
+    Fine-tuned cross-encoder (bge-reranker-v2-m3) & dev nDCG@20 = 0.1228 (large regression) & trained on a stale anchor format, mismatched with the shipped encoder \\
+    Gemma-3-12b conservative pruning (25$\to$20) & 0.0812 vs. 0.0818 baseline & regression \\
+    Zero-shot Qwen3-8B reranker & Blind A nDCG@20 0.3990$\to$0.3310, lex. div. 0.5909$\to$0.0125, judge 1.90$\to$1.15, composite 0.3291$\to$0.1811 & diversity collapse \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\textbf{Hard negatives that taught the wrong lesson.} An earlier two-tower
+iteration (v4) trained with \texttt{MultipleNegativesRankingLoss} and
+BM25-top-5 hard negatives regressed dev nDCG@20 to 0.1364, worse than the
+0.1418 reached without hard negatives at all. Our reading: BM25-top-5
+negatives are lexically close to the positive but not necessarily wrong in
+intent, so the loss pushed the encoder to separate on superficial lexical
+features rather than dialogue intent. This result is why the shipped model
+(Section~3.2) mines hard negatives in a strict priority order -- confirmed
+session rejections first, then BM25 near-misses, then same-artist
+distractors, then in-batch negatives -- and never treats a raw BM25 top-K
+result as a hard negative on its own.
+
+\textbf{Development and blind generalization can disagree.} Adding
+progress-aware retrieval and ranking (H1/H3, Section~3.3) to an intermediate
+two-tower model (v8b) dropped dev nDCG@20 from 0.1684 to 0.1615, a regression
+on the development metric, while Blind A nDCG rose to 0.3701, a gain over the
+prior no-GPA baseline. Judged on dev alone, this change would have been
+reverted. We instead adopted two working rules from this case: a feature
+whose importance swings by more than 50\% across the 5 cross-validation
+folds is flagged as unstable and treated with suspicion, and a regression on
+the blind set is weighed as costing more than the sum of all dev-set gains,
+since blind sessions -- with goal, GPA, and thoughts removed -- are the
+harder, more representative target.
+
+\subsection{Behavior Across Goal-Category Types}
+
+Not everything trains the same behavior. Each session's goal falls into one
+of 11 categories (Table~\ref{tab:goalcat}); dev nDCG@20 for the shipped
+configuration ranges from 0.1326 (Category I) to 0.1953 (Category F). The
+weakest four categories (I, C, K, J) are all narrow, exact-match requests;
+the strongest three (E, F, H) are broad or multi-faceted requests.
+
+\begin{table}
+  \caption{Dev nDCG@20 by goal category.}
+  \label{tab:goalcat}
+  \begin{tabular}{p{0.08\linewidth}p{0.6\linewidth}p{0.12\linewidth}}
+    \toprule
+    Cat & Type & nDCG@20 \\
+    \midrule
+    I & specific globally popular song & 0.1326 \\
+    C & specific album by description & 0.1332 \\
+    K & discover, multi-instrumental, broad era & 0.1367 \\
+    J & specific hit & 0.1585 \\
+    G & multi mood & 0.1605 \\
+    A & specific instrumental (game/movie) & 0.1639 \\
+    D & specific soundtrack & 0.1653 \\
+    B & specific by lyric phrase & 0.1807 \\
+    H & multi artists & 0.1884 \\
+    E & musical journey, multi & 0.1945 \\
+    F & multi era/genre & 0.1953 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+A concrete pair from the dev set shows why. In one Category I session the
+listener asks for ``a catchy, dance-y track that was big in the 2000s,
+possibly from a non-English speaking country'' with no title or artist to
+anchor retrieval; the system recommends ``How Soon Is Now?'' by The Smiths,
+then ``Abra Cadaver'' by The Hives -- both alternative/punk rock, both
+rejected (``it's not quite what I'm looking for\ldots definitely had a Latin
+feel to it''). With no lexical anchor, retrieval falls back to the
+listener's broader taste profile (alternative rock) instead of the
+request's actual content (Latin pop, danceable). In a Category F session,
+by contrast, the listener names the artist directly (``Black Keys
+songs\ldots from `Thickfreakness' or `Rubber Factory'''); the system
+returns ``Thickfreakness'' on the first turn, the listener confirms it is
+``absolutely what I had in mind,'' and the goal-progress label reads
+\texttt{MOVES\_TOWARD\_GOAL} for the rest of the session. The difference is
+not specificity in the abstract -- both requests are specific -- it is
+whether the request supplies a lexical anchor, an artist or title, that
+BM25 and the dialogue anchor can lock onto.
+
+This also complicates the multi-source pool-expansion story of
+Section~2: expansion helps ten of the eleven categories but actively hurts
+Category I ($-0.0039$ dev nDCG vs. the simpler two-source baseline),
+because sources calibrated to mainstream, taste-profile-driven sessions add
+noise exactly where there is no anchor to filter against. More sources is
+not uniformly better.
 
 \section{Efficiency and Scalability}
 
@@ -404,12 +528,14 @@ train/evaluate/iterate loop, including the one LoRA fine-tune, runs on a single
 
 \section{Conclusion}
 
-A conversational music recommender need not use a GPU cluster or a per-candidate
-neural reranker to be competitive. Fusing many inexpensive retrievers, letting a
-gradient-boosted ranker arbitrate them, adding a single LoRA-adapted dialogue
-encoder, and correctly handling a goal-progress feedback signal that is off-by-one
-in time, contaminated with rejected tracks, and absent at test time together reach
-composite 0.49 on the blind set while training and serving on one desktop.
+Treating goal-progress feedback as a delayed, sometimes-withheld
+preference-elicitation signal -- aligning it in time, removing rejected-track
+contamination, and reconstructing it from dialogue when absent -- feeds directly
+into recall, ranking, and the dialogue-aware retriever's anchor. Fusing many
+inexpensive retrievers, letting a gradient-boosted ranker arbitrate them, and
+adding a single LoRA-adapted dialogue encoder built around this signal together
+reach composite 0.49 on the blind set, entirely on one desktop with no discrete
+GPU.
 
 \begin{acks}
 Insert acknowledgments here.
