@@ -272,10 +272,20 @@ def main():
             flush_para(); i += 1; continue
 
         # table caption: **Table N: ...**  -> remembered, added inside the
-        # table's own full-width section (see table block below)
-        cm = re.match(r"^\*\*(Table \d+[a-z]?:.*)\*\*$", stripped)
-        if cm:
-            flush_para(); last_caption = cm.group(1); i += 1; continue
+        # table's own full-width section (see table block below). May wrap
+        # across multiple source lines before the closing "**".
+        if re.match(r"^\*\*Table \d+[a-z]?:", stripped):
+            flush_para()
+            parts = [stripped]
+            while not parts[-1].endswith("**") and i + 1 < len(lines):
+                i += 1
+                parts.append(lines[i].strip())
+            caption_text = " ".join(parts)
+            caption_text = re.sub(r"^\*\*", "", caption_text)
+            caption_text = re.sub(r"\*\*$", "", caption_text)
+            last_caption = caption_text.strip()
+            i += 1
+            continue
 
         # fenced code block
         if stripped.startswith("```"):
