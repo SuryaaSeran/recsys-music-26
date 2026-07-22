@@ -22,7 +22,7 @@
 % ACM Primary Article Template checkout before submitting.
 
 \documentclass[sigconf]{acmart}
-
+\usepackage{array}
 \usepackage{booktabs}
 \usepackage{listings}
 
@@ -165,22 +165,25 @@ per-source scores and origin flags that later become ranker features. The design
 rule is to \emph{add candidates, never re-weight sources by hand}: even low-precision
 sources help, because source membership feeds the agreement feature of Section~4.
 
-\begin{table}
+\begin{table}[t]
   \caption{The nine recall sources.}
   \label{tab:sources}
-  \begin{tabular}{p{0.04\linewidth}p{0.20\linewidth}p{0.16\linewidth}p{0.48\linewidth}}
+  \small
+  \renewcommand{\arraystretch}{1.15}
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{@{}p{0.28\linewidth} p{0.65\linewidth}@{}}
     \toprule
-    \# & Source & Budget & Signal \\
+    \textbf{Source} & \textbf{Signal} \\
     \midrule
-    1 & BM25 (Okapi) & top-500 & lexical match on name/artist/album/tags \\
-    2 & Two-tower ANN & top-2000 & fine-tuned conversational-intent match \\
-    3 & Last-track NN & 100 $\times$ last 2 & ``more like what just played'' \\
-    4 & Artist expansion & discographies & tracks by any retrieved/mentioned artist \\
-    5 & Qwen3-0.6B NN & top-500 & second dense opinion, different space \\
-    6 & CF-BPR & top-200 & collaborative signal, warm users only \\
-    7 & Session-mean NN & top-100 & neighbors of the session taste centroid \\
-    8 & Co-occurrence & 300/150/50 & tracks that followed recent history \\
-    9 & SASRec buckets & cap 300 & next semantic-bucket expansion (optional) \\
+    BM25 (Okapi) & lexical match on name/artist/album/tags \\
+    Two-tower ANN & fine-tuned conversational-intent match \\
+    Last-track NN & ``more like what just played'' \\
+    Artist expansion & tracks by any retrieved/mentioned artist \\
+    Qwen3-0.6B NN & second dense opinion, different space \\
+    CF-BPR & collaborative signal, warm users only \\
+    Session-mean NN & neighbors of the session taste centroid \\
+    Co-occurrence & tracks that followed recent history \\
+    SASRec buckets & next semantic-bucket expansion (optional) \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -315,19 +318,27 @@ nDCG@20 = 0.3144) and is a 0.6~MB file. The features fall into six groups (Table
 multi-source agreement accounts for roughly 57\% of total model gain and is the
 feature that transfers best when goal and GPA are withheld on the blind set.
 
-\begin{table}
+% requires \usepackage{array} in preamble (already loaded by acmart, but add
+% \usepackage{array} explicitly if you get "Illegal parameter number" errors
+% from the \raggedright trick below)
+
+\begin{table}[t]
   \caption{Rescorer feature groups (67 features).}
   \label{tab:features}
-  \begin{tabular}{p{0.06\linewidth}p{0.85\linewidth}}
+  \centering
+  \small
+  \renewcommand{\arraystretch}{1.2}
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{@{}>{\bfseries}p{0.055\linewidth} p{0.85\linewidth}@{}}
     \toprule
-    Group & Features \\
+    \multicolumn{1}{@{}l}{\bfseries Grp.} & \textbf{Features} \\
     \midrule
-    A & Retrieval scores: two-tower cosine and rank; Qwen3 metadata and lyrics cosines; CLAP audio cosine; CF cosine; BM25 reciprocal rank; co-occurrence rank \\
-    B & Source agreement: \texttt{n\_sources} and transforms: count of sources returning the candidate; a de-facto ensemble vote \\
-    C & Track metadata: popularity percentile; years since release; request-tag overlap \\
-    D & Session state (GPA): cosine to accepted- and to rejected-history centroids; artist-in-rejected-set; accepted/rejected turn counts; consecutive rejections; CF distance to history \\
-    E & Intent extraction: era/genre/mood keywords parsed from the request; candidate era/genre match; album continuity; within-artist popularity and transition ranks; bucket-match counts \\
-    F & Sequential ID: SASRec bucket-origin and rank (optional configuration) \\
+    A & \emph{Retrieval scores:} two-tower cosine and rank; Qwen3 metadata and lyrics cosines; CLAP audio cosine; CF cosine; BM25 reciprocal rank; co-occurrence rank \\[2pt]
+    B & \emph{Source agreement:} \texttt{n\_sources} and transforms (count of sources returning the candidate); a de-facto ensemble vote \\[2pt]
+    C & \emph{Track metadata:} popularity percentile; years since release; request-tag overlap \\[2pt]
+    D & \emph{Session state (GPA):} cosine to accepted- and rejected-history centroids; artist-in-rejected-set; accepted/rejected turn counts; consecutive rejections; CF distance to history \\[2pt]
+    E & \emph{Intent extraction:} era/genre/mood keywords parsed from the request; candidate era/genre match; album continuity; within-artist popularity and transition ranks; bucket-match counts \\[2pt]
+    F & \emph{Sequential ID:} SASRec bucket-origin and rank (optional configuration) \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -346,7 +357,7 @@ system scores nDCG@20 = 0.3997 (Blind A) and composite 0.49 (Blind B).
   \label{tab:results}
   \begin{tabular}{p{0.72\linewidth}p{0.16\linewidth}}
     \toprule
-    Change & nDCG@20 \\
+    \textbf{Change} & \textbf{nDCG@20} \\
     \midrule
     BM25 over name + artist + album & 0.0861 \\
     + index the tag list & 0.0960 \\
@@ -369,7 +380,7 @@ informative than the numbers in Table~\ref{tab:results} alone.
 
 \textbf{Reranking on top of LambdaMART.} Every attempt to re-rank the
 LambdaMART output with a second, more ``semantic'' model underperformed the
-LambdaMART-only baseline (Table~\ref{tab:rerank-fail}). A pre-trained
+LambdaMART-only baseline. A pre-trained
 cross-encoder with no TalkPlay fine-tuning underperformed outright. A
 fine-tuned cross-encoder (bge-reranker-v2-m3, pool-aware negatives) regressed
 to dev nDCG@20 = 0.1228, a large drop -- but the cause was not the reranking
@@ -390,21 +401,6 @@ failure mode invisible to nDCG@20 alone but catastrophic for lexical
 diversity and judge quality. The retained system (LambdaMART only, no added
 reranker) is the positive case here: its composite score beats every
 reranked variant we tried.
-
-\begin{table}
-  \caption{Reranking attempts on top of the LambdaMART baseline.}
-  \label{tab:rerank-fail}
-  \begin{tabular}{p{0.28\linewidth}p{0.32\linewidth}p{0.28\linewidth}}
-    \toprule
-    Attempt & Result & Verdict \\
-    \midrule
-    Pre-trained cross-encoder (no fine-tune) & underperformed the LambdaMART baseline & no domain adaptation to TalkPlay dialogue/track text \\
-    Fine-tuned cross-encoder (bge-reranker-v2-m3) & dev nDCG@20 = 0.1228 (large regression) & trained on a stale anchor format, mismatched with the shipped encoder \\
-    Gemma-3-12b conservative pruning (25$\to$20) & 0.0812 vs. 0.0818 baseline & regression \\
-    Zero-shot Qwen3-8B reranker & Blind A nDCG@20 0.3990$\to$0.3310, lex. div. 0.5909$\to$0.0125, judge 1.90$\to$1.15, composite 0.3291$\to$0.1811 & diversity collapse \\
-    \bottomrule
-  \end{tabular}
-\end{table}
 
 \textbf{Hard negatives that taught the wrong lesson.} An earlier two-tower
 iteration (v4) trained with \texttt{MultipleNegativesRankingLoss} and
@@ -443,7 +439,7 @@ the strongest three (E, F, H) are broad or multi-faceted requests.
   \label{tab:goalcat}
   \begin{tabular}{p{0.08\linewidth}p{0.6\linewidth}p{0.12\linewidth}}
     \toprule
-    Cat & Type & nDCG@20 \\
+    \textbf{Cat} & \textbf{Type} & \textbf{nDCG@20} \\
     \midrule
     I & specific globally popular song & 0.1326 \\
     C & specific album by description & 0.1332 \\
@@ -510,7 +506,7 @@ train/evaluate/iterate loop, including the one LoRA fine-tune, runs on a single
   \label{tab:latency}
   \begin{tabular}{p{0.68\linewidth}p{0.20\linewidth}}
     \toprule
-    Operation & Cost \\
+    \textbf{Operation} & \textbf{Cost} \\
     \midrule
     Two-tower query encode (e5-base) & 47~ms \\
     Exact ANN, 47,071 $\times$ 768, top-2000 & 2.2~ms \\
