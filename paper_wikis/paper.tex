@@ -188,7 +188,7 @@ sources help, because source membership feeds the agreement feature of Section~4
   \end{tabular}
 \end{table}
 
-\emph{Lexical (source 1).} BM25 (via \texttt{bm25s}) indexes each track's name, artist, album,
+\emph{Lexical (source 1).} BM25~\cite{bm25} (via \texttt{bm25s}) indexes each track's name, artist, album,
 and tag list; indexing the tags matters because conversational requests use
 genre/mood/era vocabulary that only tags carry. The query concatenates the goal,
 culture, the last four played tracks, and the last four dialogue turns (the
@@ -216,11 +216,11 @@ retrieved or mentioned artist; it is the cheapest high-recall source and matters
 because sessions are often artist deep-dives. Co-occurrence (source 8) is a count
 table of tracks that most often followed the last one/two/three history tracks in
 training sessions. Semantic-bucket expansion (source 9) is an optional auxiliary:
-an RQ-VAE assigns each track a semantic ID and a small SASRec predicts the next
+an RQ-VAE assigns each track a semantic ID and a small SASRec~\cite{sasrec} predicts the next
 bucket, but next-bucket prediction has a low ceiling (hit@3 = 42.1\%), so an
 eight-source configuration without it reaches parity.
 
-\emph{Collaborative (source 6).} The competition-provided BPR matrix-factorization
+\emph{Collaborative (source 6).} The competition-provided BPR~\cite{bpr} matrix-factorization
 embeddings add each warm user's top-200 tracks; cold sessions simply receive nothing from this source and the
 pipeline degrades gracefully.
 
@@ -232,10 +232,10 @@ fine-tuning on (dialogue, gold-track) pairs.
 
 \subsection{Model and anchor}
 
-The base encoder is \texttt{intfloat/multilingual-e5-base} (XLM-RoBERTa, 768-dim,
+The base encoder is \texttt{intfloat/multilingual-e5-base}~\cite{e5} (XLM-RoBERTa, 768-dim,
 512-token window, 279M parameters), chosen for its context length (an earlier
 256-token model truncated the user's request on 81\% of anchors). We fine-tune with
-LoRA (rank 32, alpha 64) on the query/key/value projections: 1.8M trainable
+LoRA~\cite{lora} (rank 32, alpha 64) on the query/key/value projections: 1.8M trainable
 parameters, 0.64\% of the model; full fine-tuning does not fit in 16~GB, LoRA plus
 gradient checkpointing does. The query anchor is \emph{role-tagged} so the encoder sees
 dialogue structure:
@@ -305,7 +305,7 @@ what makes it viable.
 
 \section{Learning-to-Rank Rescoring}
 
-The rescorer is a LightGBM LambdaMART model (nDCG@20 objective) that scores every
+The rescorer is a LightGBM~\cite{lightgbm} LambdaMART~\cite{lambdamart} model (nDCG@20 objective) that scores every
 pooled candidate and returns the top 20. It replaces hand-tuned linear fusion and
 is the pivotal choice: it \emph{decouples recall from precision}, absorbs heterogeneous
 features (cosines, ranks, count tables, metadata, session counters), and handles
@@ -537,43 +537,7 @@ GPU.
 Insert acknowledgments here.
 \end{acks}
 
-\begin{thebibliography}{7}
-
-\bibitem{e5}
-Liang Wang, Nan Yang, Xiaolong Huang, Linjun Yang, Rangan Majumder, and Furu Wei. 2024.
-Multilingual E5 Text Embeddings: A Technical Report.
-\emph{arXiv preprint arXiv:2402.05672}.
-
-\bibitem{lightgbm}
-Guolin Ke, Qi Meng, Thomas Finley, Taifeng Wang, Wei Chen, Weidong Ma, Qiwei Ye, and Tie-Yan Liu. 2017.
-LightGBM: A Highly Efficient Gradient Boosting Decision Tree.
-In \emph{Advances in Neural Information Processing Systems (NeurIPS)}.
-
-\bibitem{lambdamart}
-Christopher J. C. Burges. 2010.
-From RankNet to LambdaRank to LambdaMART: An Overview.
-Microsoft Research Technical Report MSR-TR-2010-82.
-
-\bibitem{lora}
-Edward J. Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen. 2022.
-LoRA: Low-Rank Adaptation of Large Language Models.
-In \emph{International Conference on Learning Representations (ICLR)}.
-
-\bibitem{bpr}
-Steffen Rendle, Christoph Freudenthaler, Zeno Gantner, and Lars Schmidt-Thieme. 2009.
-BPR: Bayesian Personalized Ranking from Implicit Feedback.
-In \emph{Proceedings of the Twenty-Fifth Conference on Uncertainty in Artificial Intelligence (UAI)}.
-
-\bibitem{sasrec}
-Wang-Cheng Kang and Julian McAuley. 2018.
-Self-Attentive Sequential Recommendation.
-In \emph{IEEE International Conference on Data Mining (ICDM)}.
-
-\bibitem{bm25}
-Stephen Robertson and Hugo Zaragoza. 2009.
-The Probabilistic Relevance Framework: BM25 and Beyond.
-\emph{Foundations and Trends in Information Retrieval} 3, 4.
-
-\end{thebibliography}
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{references}
 
 \end{document}
