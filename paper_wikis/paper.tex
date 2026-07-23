@@ -265,11 +265,15 @@ a 7~MB LoRA adapter applied to the cached base encoder, and query a one-pass
 
 \subsection{Using the goal-progress feedback signal}
 
-Each training turn carries a \texttt{goal\_progress\_assessment} (GPA): a label recording
-whether the \emph{previous} recommendation moved the listener toward their goal, i.e. a
-per-recommendation accept/reject signal. It is the richest preference feedback in
-the dataset and the trickiest part of the system, because the raw label cannot be
-used as-is and it is removed entirely from the blind set.
+Every session has a stated \emph{goal} (the kind of music the listener is after),
+and each turn carries a \texttt{goal\_progress\_assessment} (GPA): a label recording
+whether the \emph{previous} recommendation moved the listener toward that goal
+(\texttt{MOVES\_TOWARD\_GOAL}) or not (\texttt{DOES\_NOT\_MOVE\_TOWARD\_GOAL}). It is
+in effect per-recommendation accept/reject feedback from the listener, and the
+richest preference signal in the dataset. It is also the hardest to use, for three
+reasons: the raw label is off by one turn, nearly half of its ``positive'' tracks
+were in fact rejected, and it is stripped out of the blind set entirely. We address
+each in turn, then use the cleaned signal at inference.
 
 \textbf{First, align it in time.} The GPA at turn $T$ is the reaction to the track
 recommended at turn $T{-}1$: the system acts at one turn and the user responds at the
@@ -414,17 +418,19 @@ session rejections first, then BM25 near-misses, then same-artist
 distractors, then in-batch negatives -- and never treats a raw BM25 top-K
 result as a hard negative on its own.
 
-\textbf{Development and blind generalization can disagree.} Adding
-progress-aware retrieval and ranking (H1/H3, Section~3.3) to an intermediate
-two-tower model (v8b) dropped dev nDCG@20 from 0.1684 to 0.1615, a regression
-on the development metric, while Blind A nDCG rose to 0.3701, a gain over the
-prior no-GPA baseline. Judged on dev alone, this change would have been
-reverted. We instead adopted two working rules from this case: a feature
-whose importance swings by more than 50\% across the 5 cross-validation
-folds is flagged as unstable and treated with suspicion, and a regression on
-the blind set is weighed as costing more than the sum of all dev-set gains,
-since blind sessions -- with goal, GPA, and thoughts removed -- are the
-harder, more representative target.
+\textbf{Development and blind scores can move in opposite directions.} Adding
+the progress-aware retrieval and ranking of Section~3.3 to an intermediate
+two-tower model \emph{lowered} development nDCG@20 (0.1684 to 0.1615) but
+\emph{raised} Blind A nDCG@20 (to 0.3701, above the prior no-GPA baseline).
+The development metric alone would have rejected a change that in fact helped
+on the harder blind set, where the goal, GPA, and model thoughts are all
+removed. We drew two working rules from this. First, we stopped trusting the
+development score in isolation: a regression on the blind set is treated as
+costing more than the sum of all development-set gains, because the blind set
+is the closer proxy for the real target. Second, we flag any feature whose
+importance swings by more than 50\% across the five cross-validation folds as
+unstable, since that instability is what lets a feature help development while
+hurting generalization.
 
 \subsection{Behavior Across Goal-Category Types}
 
@@ -524,14 +530,14 @@ train/evaluate/iterate loop, including the one LoRA fine-tune, runs on a single
 
 \section{Conclusion}
 
-Treating goal-progress feedback as a delayed, sometimes-withheld
-preference-elicitation signal -- aligning it in time, removing rejected-track
-contamination, and reconstructing it from dialogue when absent -- feeds directly
-into recall, ranking, and the dialogue-aware retriever's anchor. Fusing many
-inexpensive retrievers, letting a gradient-boosted ranker arbitrate them, and
-adding a single LoRA-adapted dialogue encoder built around this signal together
-reach composite 0.49 on the blind set, entirely on one desktop with no discrete
-GPU.
+The system's central idea is to treat goal-progress feedback as a delayed,
+sometimes-withheld preference-elicitation signal rather than a raw label: we
+align it in time, remove rejected-track contamination, and reconstruct it from
+dialogue when it is absent. This signal shapes recall, ranking, and the
+dialogue-aware retriever's anchor alike. Combined with a union of inexpensive
+retrievers arbitrated by a gradient-boosted ranker, and a single LoRA-adapted
+dialogue encoder built around this signal, the system reaches composite 0.49
+on the blind set, entirely on one desktop with no discrete GPU.
 
 \begin{acks}
 Insert acknowledgments here.
